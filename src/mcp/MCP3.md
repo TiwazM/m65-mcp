@@ -1,9 +1,8 @@
 # MCP-3: geometry
 
 Spec, 2026-11-12. Decisions 1-6 taken as recommended (Steve, 2026-11-12).
-Stage 0 (making room) built and checked in simulation and on a MEGA65 R6
-the same day; stage 1 (the plumbing) built and checked in simulation
-("Stage 0", "Stage 1" below).
+Stages 0 (making room) and 1 (the plumbing) built and checked in
+simulation and on a MEGA65 R6 the same day ("Stage 0", "Stage 1" below).
 
 MCP-3 does what m65tr3d's fixed-point vertex unit did (removed after MCP-2,
 MCP.md decision 4), on FP32:
@@ -367,7 +366,12 @@ above). MVER reads `$03`.
   the converter and the vertex path), 4,313 flip-flops, 13 RAMB36 (12 new:
   the vertex array and the result buffer) and 2 DSPs; the chip 65.3% of its
   LUTs, 42% of its block RAM.
-- **The board:** not yet (the board is busy).
+- **The board:** three stage-4 scripts (seeds 1, 2, 3), 45,355 reads
+  identical, the result buffer read through the window at the CPU's own
+  pace. The Mandelbrot exact and as fast as before (61.8 ms MCP-1, 10.3 ms
+  MCP-2; 40.7 ms at 80 x 50), every command's clocks as on stage 0. FDIV in
+  `vtime` read 31.0 clocks, as the simulation gives for stage 0 and stage
+  1 alike; on stage 0's board run it read 29.7, which I can't account for.
 
 ## Open points
 
