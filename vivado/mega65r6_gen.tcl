@@ -202,6 +202,9 @@ set files [list \
  "[file normalize "$origin_dir/src/vhdl/vfpga/overlay_IP.vhdl"]"\
  "[file normalize "$origin_dir/src/vhdl/vfpga/vfpga_clock_controller_pausable.vhdl"]"\
  "[file normalize "$origin_dir/src/vhdl/vfpga/vfpga_wrapper_8bit.vhdl"]"\
+ "[file normalize "$origin_dir/src/vhdl/mcp_ram.vhdl"]"\
+ "[file normalize "$origin_dir/src/vhdl/mcp_fpu.vhdl"]"\
+ "[file normalize "$origin_dir/src/vhdl/mcp.vhdl"]"\
  "[file normalize "$origin_dir/src/vhdl/divider32.vhdl"]"\
  "[file normalize "$origin_dir/src/vhdl/shifter32.vhdl"]"\
  "[file normalize "$origin_dir/src/vhdl/multiply32.vhdl"]"\
@@ -668,6 +671,18 @@ set file_obj [get_files -of_objects [get_filesets sources_1] [list "*$file"]]
 set_property -name "file_type" -value "VHDL" -objects $file_obj
 
 set file "vhdl/vfpga/vfpga_clock_controller_pausable.vhdl"
+set file_obj [get_files -of_objects [get_filesets sources_1] [list "*$file"]]
+set_property -name "file_type" -value "VHDL" -objects $file_obj
+
+set file "vhdl/mcp_ram.vhdl"
+set file_obj [get_files -of_objects [get_filesets sources_1] [list "*$file"]]
+set_property -name "file_type" -value "VHDL" -objects $file_obj
+
+set file "vhdl/mcp_fpu.vhdl"
+set file_obj [get_files -of_objects [get_filesets sources_1] [list "*$file"]]
+set_property -name "file_type" -value "VHDL" -objects $file_obj
+
+set file "vhdl/mcp.vhdl"
 set file_obj [get_files -of_objects [get_filesets sources_1] [list "*$file"]]
 set_property -name "file_type" -value "VHDL" -objects $file_obj
 

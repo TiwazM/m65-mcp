@@ -472,6 +472,7 @@ architecture behavioral of iomapper is
   signal restore_down_count : unsigned(7 downto 0) := x"00";
 
   signal vfpga_cs : std_logic;
+  signal mcp_cs : std_logic;
 
   signal cia1cs : std_logic;
   signal cia2cs : std_logic;
@@ -1189,6 +1190,20 @@ begin
         );
     end generate;
 
+
+  -- @IO:GS $FFDF100-$FFDF7FF MCP:MCP M65-MCP, the MEGA65 Mathematics Coprocessor (src/mcp/README.md), in the vFPGA's slot
+  mcp0: if target = mega65r6 generate
+    mcp_unit: entity work.mcp
+      port map (
+      clock => cpuclock,
+      cs => mcp_cs,
+      fastio_addr => unsigned(address(11 downto 0)),
+      fastio_read => r,
+      fastio_write => w,
+      fastio_wdata => unsigned(data_i),
+      fastio_rdata => data_o
+      );
+  end generate;
 
   eth0: if target /= megaphoner4 and target /= qmtecha100t and target /= qmtecha200t and target /= qmtechk325t and target /= wukong generate
     ethernet0 : entity work.ethernet
@@ -2350,6 +2365,13 @@ begin
         vfpga_cs <= '1';
       else
         vfpga_cs <= '0';
+      end if;
+      -- $FFDFxxx (the CPU routes the 4 KB to this slot): the M65-MCP at
+      -- $100-$7FF ($000-$0FF and $800-$FFF unused)
+      if address(19 downto 12) = x"DF" and address(11) = '0' and address(10 downto 8) /= "000" then
+        mcp_cs <= '1';
+      else
+        mcp_cs <= '0';
       end if;
 
     report "CS lines: "
