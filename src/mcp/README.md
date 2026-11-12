@@ -1,8 +1,9 @@
 # M65-MCP
 
-The MEGA65 Mathematics Coprocessor: the design is in [`MCP.md`](MCP.md), and
-the first milestone, MCP-1 (the scalar FPU), is specified in
-[`MCP1.md`](MCP1.md), which is also its programming model.
+The MEGA65 Mathematics Coprocessor. The design is in [`MCP.md`](MCP.md).
+The programming model is in [`MCP1.md`](MCP1.md) (MCP-1, the scalar FPU)
+and [`MCP2.md`](MCP2.md) (MCP-2: programs, multiply-add, vectors and
+matrices). [`MCP3.md`](MCP3.md) is MCP-3's spec (geometry), under way.
 
 MCP-1 is built and checked in simulation and on a MEGA65 R6 (board test:
 three random scripts, 35,625 reads, all identical to the model's). MCP-2

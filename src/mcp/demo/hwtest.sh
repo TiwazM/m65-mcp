@@ -22,24 +22,34 @@ m65rs=${M65RS:-"/Applications/mega65studio/m65rs"}
 [ -f $dir/mcptest.prg ] || { echo "no $dir/mcptest.prg: run build.sh first"; exit 1; }
 peek() { "$m65rs" peek $1 | grep -oE '= \$[0-9A-F]+' | tr -d '= $'; }
 
-if [ "$bit" != "-" ]; then
-    echo "== loading $bit"
-    "$m65rs" jtag bit $bit
-    sleep 10                              # HYPPO boots, the ROM comes up
-fi
-"$m65rs" info | head -8
-pc=$("$m65rs" info | sed -n 4p | cut -c1-4)
-if [[ "$pc" == 56E? ]]; then
-    echo "the ROM waits for CIA 2 timer A (PC \$$pc): starting it"
-    "$m65rs" poke ffd3d04 ff ff
-    "$m65rs" poke ffd3d0e 11
-    sleep 6
-fi
-id=$(peek ffdf101)
-if [ "$id" != "4D" ]; then
-    echo "no MCP at \$FFDF100 (MID \$$id): not an M65-MCP core with MCP-1"
-    exit 1
-fi
+# A JTAG load now and then does not take (the transfer seems to fail without
+# m65rs noticing, and the board configures itself from its flash): the
+# MCP's MID tells, and the load is tried again, three times in all.
+tries=0
+while true; do
+    if [ "$bit" != "-" ]; then
+        echo "== loading $bit"
+        "$m65rs" jtag bit $bit
+        sleep 10                          # HYPPO boots, the ROM comes up
+    fi
+    "$m65rs" info | head -8
+    pc=$("$m65rs" info | sed -n 4p | cut -c1-4)
+    if [[ "$pc" == 56E? ]]; then
+        echo "the ROM waits for CIA 2 timer A (PC \$$pc): starting it"
+        "$m65rs" poke ffd3d04 ff ff
+        "$m65rs" poke ffd3d0e 11
+        sleep 6
+    fi
+    id=$(peek ffdf101)
+    [ "$id" = "4D" ] && break
+    tries=$((tries + 1))
+    echo "no MCP at \$FFDF100 (MID \$$id), running: $("$m65rs" info | grep '^core:')"
+    if [ "$bit" = "-" ] || [ $tries -ge 3 ]; then
+        echo "not an M65-MCP core"
+        exit 1
+    fi
+    echo "the load did not take: loading again"
+done
 
 echo "== records -> attic RAM \$8100000, then mcptest"
 d7fe=$(peek ffd37fe)

@@ -194,7 +194,7 @@ and with ACME:
 |---|---|
 | MCP-1 | Scalar FPU: FP32 operations, conversions, constants, flags; the three issue paths and the queue ([`MCP1.md`](MCP1.md)) |
 | MCP-2 | Programs (512 commands in a block RAM, run by one command: the bus bottleneck MCP-1's timing showed), a pipelined fused multiply-add unit, three-register forms, vectors (V0-V3 over F0-F15) and matrices (the M bank, MXV, MTXV, MMUL); the microcode sequencer ([`MCP2.md`](MCP2.md)) |
-| MCP-3 | Geometry on FP32: transform and project streams, clipping (near, then the frustum), lighting, the result buffer; does what m65tr3d's fixed-point vertex unit did |
+| MCP-3 | Geometry on FP32: transform and project streams, clipping (near, then the frustum), lighting, the result buffer; does what m65tr3d's fixed-point vertex unit did ([`MCP3.md`](MCP3.md)) |
 | MCP-4 | Extended precision, Commodore 5-byte float conversions, the BASIC 65 wedge (independent of MCP-3, could come first) |
 
 Each milestone is built the way the renderer and the vertex unit were:

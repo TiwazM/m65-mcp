@@ -38,13 +38,22 @@ def peek(addr):
 
 
 def boot(bit):
-    m65("jtag", "bit", bit)
-    time.sleep(10)
-    pc = m65("info").splitlines()[3][:4]
-    if pc.startswith("56E"):                     # the ROM waiting for CIA 2 timer A
-        m65("poke", "ffd3d04", "ff", "ff")
-        m65("poke", "ffd3d0e", "11")
-        time.sleep(6)
+    """the bitstream over JTAG; a load now and then does not take (the board
+    then runs the core in its flash): MID ($FFDF101) tells, three tries"""
+    for attempt in range(3):
+        m65("jtag", "bit", bit)
+        time.sleep(10)
+        pc = m65("info").splitlines()[3][:4]
+        if pc.startswith("56E"):                 # the ROM waiting for CIA 2 timer A
+            m65("poke", "ffd3d04", "ff", "ff")
+            m65("poke", "ffd3d0e", "11")
+            time.sleep(6)
+        if peek("ffdf101") == 0x4D:
+            return
+        core = [l for l in m65("info").splitlines() if l.startswith("core:")]
+        print(f"the load did not take (no MCP; {core[0] if core else 'core unknown'}): loading again",
+              flush=True)
+    sys.exit("no MCP after three loads")
 
 
 def main():

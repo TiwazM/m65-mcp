@@ -405,9 +405,18 @@ FSUB, FSUBR and FMUL now run on it (as x x 1 + z, or x x y with no add).
     wrong: every point that should escape ran to 32 iterations, so the
     escape test never fired for that whole run. It hasn't happened again
     in 12 runs since, and the program versions never failed (6 runs each).
-    A single wrong setup value, F7 (the 4.0 the test compares against),
-    would explain it, but that isn't confirmed. The bench now prints the
-    unit's registers and F0-F10 when a version gets points wrong.
+    - **The likely cause** (found later the same day): the bitstream did
+      not load, and the board ran the core in its flash, which has no MCP.
+      MCOND then reads `$00`, so no point escapes. 32,000 iterations of
+      the CPU's loop with nothing to wait for take about 171 ms.
+    - `hwtest.sh` met the same failed load three times, the board then
+      reporting no MCP (MID `$00`). The transfer seems to fail now and then
+      without `m65rs` noticing, and the board then configures itself from
+      its flash.
+    - `hwtest.sh`, `bench.py` and `vtime.py` now check MID after every
+      load and load again (three tries), printing the core that was
+      running. The bench also prints the unit's registers and F0-F10 when
+      a version gets points wrong.
 
 | Mandelbrot on the board (40.5 MHz) | Time | Per iteration |
 |---|---|---|
