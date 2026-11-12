@@ -32,6 +32,13 @@ ifndef DEBUG_HYPPO
 	DEBUG_HYPPO= 0
 endif
 
+# Set NO_FLASHMENU to 1 for test bitstreams loaded over JTAG: Hyppo then never
+# starts the flash menu on its own, which would otherwise reconfigure the FPGA
+# into the default core slot (it cannot tell a JTAG load from a power-up)
+ifndef NO_FLASHMENU
+	NO_FLASHMENU= 0
+endif
+
 
 ifdef USE_LOCAL_OPHIS
 	# use locally installed binary (requires 'ophis' to be in the $PATH)
@@ -1090,10 +1097,10 @@ $(BINDIR)/border.prg: 	$(SRCDIR)/border.a65 $(OPHIS_DEPEND)
 
 # ============================ done moved, print-warn, clean-target
 $(BINDIR)/HICKUP.M65: $(ACME_DEPEND) $(wildcard $(SRCDIR)/hyppo/*.asm) $(SRCDIR)/version.asm
-	$(ACME) --cpu m65 --setpc 0x8000 -l src/hyppo/HICKUP.sym -r src/hyppo/HICKUP.rep -I $(SRCDIR)/hyppo -DDEBUG_HYPPO=$(DEBUG_HYPPO) $(SRCDIR)/hyppo/main.asm
+	$(ACME) --cpu m65 --setpc 0x8000 -l src/hyppo/HICKUP.sym -r src/hyppo/HICKUP.rep -I $(SRCDIR)/hyppo -DDEBUG_HYPPO=$(DEBUG_HYPPO) -DNO_FLASHMENU=$(NO_FLASHMENU) $(SRCDIR)/hyppo/main.asm
 
 $(BINDIR)/BRICKUP.M65: $(ACME_DEPEND) $(wildcard $(SRCDIR)/hyppo/*.asm) $(SRCDIR)/version.asm
-	$(ACME) --cpu m65 --setpc 0x8000 -l src/hyppo/HICKUP.sym -r src/hyppo/HICKUP.rep -I $(SRCDIR)/hyppo -DDEBUG_HYPPO=$(DEBUG_HYPPO) $(SRCDIR)/hyppo/joyflash.asm
+	$(ACME) --cpu m65 --setpc 0x8000 -l src/hyppo/HICKUP.sym -r src/hyppo/HICKUP.rep -I $(SRCDIR)/hyppo -DDEBUG_HYPPO=$(DEBUG_HYPPO) -DNO_FLASHMENU=$(NO_FLASHMENU) $(SRCDIR)/hyppo/joyflash.asm
 
 $(UTILDIR)/cpusim.prg:	$(ACME_DEPEND) $(UTILDIR)/cpusim.asm
 	$(ACME) --cpu m65 --setpc 0x8100 -l cpusim.sym -r cpusim.rep $(UTILDIR)/cpusim.asm

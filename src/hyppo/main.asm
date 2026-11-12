@@ -627,7 +627,13 @@ try_flash_menu:
         ;; Use first boot code path only once
         ;; WARNING: Self modifying code!
 first_boot_flag_instruction:
+!if NO_FLASHMENU {
+        ;; (test bitstreams, make NO_FLASHMENU=1: never on its own - the jmp
+        ;; is also what marks the flash menu "not available" below)
+        jmp dont_launch_flash_menu
+} else {
         bit dont_launch_flash_menu
+}
 
         ;; On first boot, we start the flash menu regardless
         ;; (The flash menu will work out whether to switch bitstream or not)
