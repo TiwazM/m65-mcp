@@ -182,9 +182,16 @@ static void load_program(void)
     W(0x10C, at & 255);
     W(0x10D, at >> 8);
     m.mpptr = (uint16_t)(at & 511);
+    int swapped = -1;                                     /* (the regs of an FXCHG just loaded) */
     for (int i = 0; i < len; i++) {
         uint8_t b[6];
         int n = cmd_bytes(b, 1);
+        if (stage >= 3 && swapped >= 0 && R(2)) {         /* (stage 3: right after an FXCHG, a read of */
+            b[0] = (uint8_t)(R(2) ? MCP_FADD : MCP_FMOVE);  /*  what it swapped, in the clock it lands) */
+            b[1] = (uint8_t)(R(2) ? swapped : (swapped >> 4 | (swapped & 15) << 4));
+            n = 2;
+        }
+        swapped = n == 2 && b[0] == MCP_FXCHG ? b[1] : -1;
         if (i == len - 1 && R(4) && !at_end) { b[0] = MCP_PEND; n = 2; }   /* (mostly ending a pass) */
         if (at_end && (b[0] == MCP_PEND || b[0] == MCP_PEXIT)) { b[0] = MCP_FADD; n = 2; }
         if (R(40) == 0) {                                 /* cut off by MPLOADRST */

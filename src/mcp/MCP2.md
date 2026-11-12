@@ -614,9 +614,8 @@ Vectors and matrices: every wide form in "Commands" now works. MVER stays
       several index sources (s, t, d, Vs + k, ...) instead of picking the
       index first and the register once
   - Picking the index first, routing FXCHG and VMOVE through the operand
-    ports already there, and a cheaper sticky bit in the conversions should
-    take a large part of that away, with nothing changed for software.
-    That is not done yet.
+    ports already there, and one shared shifter in the core took it to
+    11,035 LUTs (MCP3.md, "Stage 0").
 
 ## Open points
 

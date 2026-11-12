@@ -73,6 +73,8 @@ architecture rtl of mcp is
   constant C_CORE_MUL   : integer := 16#04#;
   constant C_CORE_DIV   : integer := 16#05#;
   constant C_CORE_SQRT  : integer := 16#0A#;
+  constant C_CORE_MOVE  : integer := 16#00#;
+  constant C_CORE_CONST : integer := 16#15#;
 
   -- the wide forms of stage 3b
   constant W_VMOVE  : integer := 16#10#;
@@ -88,8 +90,8 @@ architecture rtl of mcp is
   constant W_MMUL   : integer := 16#24#;
 
   -- a micro-operation: the core's op, its operands a and b (a kind and an
-  -- index: Vs's, Vt's component, F[t], an F, an M, 1.0, a T), its addend c
-  -- (none, a T, a T negated), the T it writes; the last of its sequence
+  -- index: Vs's, Vt's component, F[t], an F, an M, 1.0, a T, 0), its addend
+  -- c (none, a T, a T negated), the T it writes; the last of its sequence
   constant K_VS  : natural := 0;
   constant K_VT  : natural := 1;
   constant K_FT  : natural := 2;
@@ -97,6 +99,7 @@ architecture rtl of mcp is
   constant K_M   : natural := 4;
   constant K_ONE : natural := 5;
   constant K_T   : natural := 6;
+  constant K_ZERO : natural := 7;
   constant CK_NONE : natural := 0;
   constant CK_T    : natural := 1;
   constant CK_NEGT : natural := 2;
@@ -107,7 +110,7 @@ architecture rtl of mcp is
     dst          : natural range 0 to 15;
     last         : boolean;
   end record;
-  constant NUOPS : natural := 133;
+  constant NUOPS : natural := 139;
   type ucode_t is array (0 to NUOPS - 1) of uop_t;
 
   function uo(op, ak, ai, bk, bi, ck, ci, dst : natural; last : boolean) return uop_t is
@@ -139,14 +142,17 @@ architecture rtl of mcp is
         u(n) := uo(C_CORE_FMA, K_VS, k, K_VT, k, CK_T, 0, 0, k = l - 1); n := n + 1;
       end loop;
     end loop;
-    -- VCROSS (23): the products T4-T6, then T0-T2 = fma(.., .., -T)
+    -- VCROSS (23): T3 = +0 (FCONST 0), the products T4-T6, then T0-T2 = fma(.., .., -T)
+    u(n) := uo(C_CORE_CONST, K_ONE, 0, K_ZERO, 0, CK_NONE, 0, 3, false); n := n + 1;
     u(n) := uo(C_CORE_MUL, K_VS, 2, K_VT, 1, CK_NONE, 0, 4, false); n := n + 1;
     u(n) := uo(C_CORE_MUL, K_VS, 0, K_VT, 2, CK_NONE, 0, 5, false); n := n + 1;
     u(n) := uo(C_CORE_MUL, K_VS, 1, K_VT, 0, CK_NONE, 0, 6, false); n := n + 1;
     u(n) := uo(C_CORE_FMA, K_VS, 1, K_VT, 2, CK_NEGT, 4, 0, false); n := n + 1;
     u(n) := uo(C_CORE_FMA, K_VS, 2, K_VT, 0, CK_NEGT, 5, 1, false); n := n + 1;
     u(n) := uo(C_CORE_FMA, K_VS, 0, K_VT, 1, CK_NEGT, 6, 2, true); n := n + 1;
-    -- VNORM3 (29): T4 = Vs.xyz . Vs.xyz, T5 = sqrt T4, T6 = 1 / T5, Tk = Vs.k x T6
+    -- VNORM3 (30): T3 = Vs.w (a move), T4 = Vs.xyz . Vs.xyz, T5 = sqrt T4,
+    -- T6 = 1 / T5, Tk = Vs.k x T6
+    u(n) := uo(C_CORE_MOVE, K_ONE, 0, K_VS, 3, CK_NONE, 0, 3, false); n := n + 1;
     u(n) := uo(C_CORE_MUL, K_VS, 0, K_VS, 0, CK_NONE, 0, 4, false); n := n + 1;
     u(n) := uo(C_CORE_FMA, K_VS, 1, K_VS, 1, CK_T, 4, 4, false); n := n + 1;
     u(n) := uo(C_CORE_FMA, K_VS, 2, K_VS, 2, CK_T, 4, 4, false); n := n + 1;
@@ -155,7 +161,7 @@ architecture rtl of mcp is
     for k in 0 to 2 loop
       u(n) := uo(C_CORE_MUL, K_VS, k, K_T, 6, CK_NONE, 0, k, k = 2); n := n + 1;
     end loop;
-    -- MXV (37), MTXV (53): Tr = row (column) r of M . Vs, the four rows interleaved
+    -- MXV (39), MTXV (55): Tr = row (column) r of M . Vs, the four rows interleaved
     for tr in 0 to 1 loop
       for k in 0 to 3 loop
         for rr in 0 to 3 loop
@@ -169,7 +175,7 @@ architecture rtl of mcp is
         end loop;
       end loop;
     end loop;
-    -- MMUL (69): T(4r + c) = row r of M . column c of F, the sixteen interleaved
+    -- MMUL (71): T(4r + c) = row r of M . column c of F, the sixteen interleaved
     for k in 0 to 3 loop
       for e in 0 to 15 loop
         r := e / 4; c := e mod 4;
@@ -180,6 +186,9 @@ architecture rtl of mcp is
         end if;
         n := n + 1;
       end loop;
+    end loop;
+    for k in 0 to 3 loop                          -- VMOVE (135): Tk = Vs.k (moves)
+      u(n) := uo(C_CORE_MOVE, K_ONE, 0, K_VS, k, CK_NONE, 0, k, k = 3); n := n + 1;
     end loop;
     assert n = NUOPS report "UCODE: " & integer'image(n) & " entries" severity failure;
     return u;
@@ -197,10 +206,11 @@ architecture rtl of mcp is
       when 16#15# => return 16;                   -- VDOT3
       when 16#16# => return 19;                   -- VDOT4
       when 16#17# => return 23;                   -- VCROSS
-      when 16#18# => return 29;                   -- VNORM3
-      when 16#22# => return 37;                   -- MXV
-      when 16#23# => return 53;                   -- MTXV
-      when others => return 69;                   -- MMUL
+      when 16#18# => return 30;                   -- VNORM3
+      when 16#22# => return 39;                   -- MXV
+      when 16#23# => return 55;                   -- MTXV
+      when 16#10# => return 135;                  -- VMOVE
+      when others => return 71;                   -- MMUL
     end case;
   end function;
 
@@ -308,6 +318,11 @@ architecture rtl of mcp is
   signal seq_op : natural range 0 to 127 := 0;
   signal seq_vs, seq_vt, seq_vd : natural range 0 to 3 := 0;
   signal seq_t, seq_d : natural range 0 to 15 := 0;
+  -- FXCHG's second half: Fd and Fs written with each other's values a clock
+  -- after it issues (xa: Fd's value then, xb: Fs's)
+  signal xw : std_logic := '0';
+  signal xd, xs : natural range 0 to 15 := 0;
+  signal xa, xb : std_logic_vector(31 downto 0) := (others => '0');
 
   -- programs
   signal pm_we : std_logic := '0';
@@ -369,15 +384,14 @@ begin
 
   process (clock)
     variable cmd : cmd_t;
-    variable x : cmd_t;
     variable enq, deq : boolean;
     variable sa : unsigned(7 downto 0);
     variable k, n : integer;
     variable qc : integer range 0 to QN + 1;
     variable res : integer;
     variable cnt : unsigned(16 downto 0);
-    -- the unit's state as this clock's results leave it (a command issued
-    -- now reads it: a result landing now is there for it)
+    -- the unit's state as this clock's results leave it: what gets written
+    -- back at the end of the clock
     variable fv : fregs_t;
     variable pv : std_logic_vector(15 downto 0);
     variable pcd, pmt : std_logic;
@@ -388,8 +402,15 @@ begin
     variable tv, mv : fregs_t;                           -- T0-T15, M0-M15 as this clock leaves them
     variable tp : std_logic_vector(15 downto 0);
     variable u : uop_t;
-    variable ua, ub, uc, w : std_logic_vector(31 downto 0);
+    variable ua, ub, uc : std_logic_vector(31 downto 0);
     variable ready : boolean;
+    -- the clock's reads: the command (or step) in line picks the indices
+    -- first, then each port reads one register, a result landing now taking
+    -- its place (three F ports, two T ports, one M port)
+    variable cand : cmd_t;
+    variable cd, cs_i, ct : natural range 0 to 15;
+    variable fa_i, fb_i, fc_i : natural range 0 to 15;
+    variable ra, rb, rc, rtb, rtc, rma : std_logic_vector(31 downto 0);
 
     function bit_of(i : integer) return std_logic_vector is
       variable v : std_logic_vector(15 downto 0) := (others => '0');
@@ -406,17 +427,48 @@ begin
       return v;
     end function;
 
-    -- a micro-operation's operand (fv, mv, tv: this clock's)
-    impure function opnd(k, i : natural) return std_logic_vector is
+    -- an F register as a command issued now sees it
+    impure function rdf(i : natural) return std_logic_vector is
+      variable v : std_logic_vector(31 downto 0);
+    begin
+      v := f(i);
+      if fm_done = '1' and fm_tag(4) = '0' and to_integer(fm_tag(3 downto 0)) = i then
+        v := fm_r;
+      elsif sh_done = '1' and sh_wf = '1' and sh_tag(4) = '0' and to_integer(sh_tag(3 downto 0)) = i then
+        v := sh_r;
+      elsif it_done = '1' and it_wf = '1' and it_tag(4) = '0' and to_integer(it_tag(3 downto 0)) = i then
+        v := it_r;
+      elsif xw = '1' and xd = i then
+        v := xb;
+      elsif xw = '1' and xs = i then
+        v := xa;
+      end if;
+      return v;
+    end function;
+
+    -- a T register as a step issued now sees it
+    impure function rdt(i : natural) return std_logic_vector is
+      variable v : std_logic_vector(31 downto 0);
+    begin
+      v := treg(i);
+      if fm_done = '1' and fm_tag(4) = '1' and to_integer(fm_tag(3 downto 0)) = i then
+        v := fm_r;
+      elsif sh_done = '1' and sh_wf = '1' and sh_tag(4) = '1' and to_integer(sh_tag(3 downto 0)) = i then
+        v := sh_r;
+      elsif it_done = '1' and it_wf = '1' and it_tag(4) = '1' and to_integer(it_tag(3 downto 0)) = i then
+        v := it_r;
+      end if;
+      return v;
+    end function;
+
+    -- a micro-operation's F operand: its register
+    impure function fidx(k, i : natural) return natural is
     begin
       case k is
-        when K_VS => return fv(4 * seq_vs + i mod 4);
-        when K_VT => return fv(4 * seq_vt + i mod 4);
-        when K_FT => return fv(seq_t);
-        when K_F => return fv(i);
-        when K_M => return mv(i);
-        when K_ONE => return x"3F800000";
-        when others => return tv(i);
+        when K_VS => return 4 * seq_vs + i mod 4;
+        when K_VT => return 4 * seq_vt + i mod 4;
+        when K_FT => return seq_t;
+        when others => return i;
       end case;
     end function;
 
@@ -425,14 +477,14 @@ begin
     -- still to come, and its unit can take it; else stall
     procedure issue(cop : integer; need : std_logic_vector(15 downto 0);
                     va, vb, vc : std_logic_vector(31 downto 0); d : integer) is
-      variable u : natural;
+      variable un : natural;
       variable wc, wm : boolean;
     begin
-      u := fpu_unit(to_unsigned(cop, 5));
+      un := fpu_unit(to_unsigned(cop, 5));
       wc := cop = C_CORE_CMP or cop = C_CORE_CLASS;
       wm := cop >= C_CORE_TOI and cop <= C_CORE_TOI16;
       if (pv and need) /= x"0000" or (wc and pcd = '1') or (wm and pmt = '1')
-         or (u = U_ITER and it_busy = '1') then
+         or (un = U_ITER and it_busy = '1') then
         stall := true;
       else
         c_start <= '1';
@@ -453,13 +505,13 @@ begin
     end procedure;
 
     -- a command, from the queue or a program: into the core, or done at once
-    -- (exchange, control, flags, PEXIT, PEND, a reserved command); X_WAIT if
-    -- it must wait for a result
+    -- (control, flags, PEXIT, PEND, a reserved command); X_WAIT if it must
+    -- wait for a result. Its operands are this clock's reads: ra = F[d]
+    -- (a wide form's F[s]), rb = F[s] (a wide form's F[t]), rc = a wide
+    -- form's F[d]
     procedure dispatch(cm : cmd_t; in_prog : boolean; r : out integer) is
       variable d, s, mf, t, cop : integer;
       variable rv : integer;              -- (an out parameter can't be read in Vivado)
-      variable tmp : std_logic_vector(31 downto 0);
-      variable tmp4 : fregs_t;
     begin
       rv := X_OK;
       stall := false;
@@ -474,13 +526,17 @@ begin
           else
             flv := std_logic_vector(cm.regs(4 downto 0));
           end if;
-        elsif cm.op = C_FXCHG then
+        elsif cm.op = C_FXCHG then                       -- written back next clock (xw)
           if pv(d) = '1' or pv(s) = '1' then
             stall := true;
           else
-            tmp := fv(d);
-            fv(d) := fv(s);
-            fv(s) := tmp;
+            xw <= '1';
+            xd <= d;
+            xs <= s;
+            xa <= ra;
+            xb <= rb;
+            pv(d) := '1';
+            pv(s) := '1';
           end if;
         elsif cm.op = C_PEXIT then
           if in_prog then
@@ -497,10 +553,10 @@ begin
         elsif cm.op >= C_NREGOPS then
           rv := X_BAD;
         elsif cm.op = C_FCONST then
-          issue(C_FCONST, bit_of(d), fv(d), std_logic_vector(resize(cm.regs(3 downto 0), 32)),
+          issue(C_FCONST, bit_of(d), ra, std_logic_vector(resize(cm.regs(3 downto 0), 32)),
                 x"00000000", d);
         else
-          issue(to_integer(cm.op), bit_of(d) or bit_of(s), fv(d), fv(s), x"00000000", d);
+          issue(to_integer(cm.op), bit_of(d) or bit_of(s), ra, rb, x"00000000", d);
         end if;
       elsif cm.form = "01" then
         mf := to_integer(cm.op(3 downto 0));
@@ -513,23 +569,12 @@ begin
             when 13 => cop := 16#1D#;                    -- FXLD
             when others => cop := mf;                    -- forms 0-10: the register forms' 0-10
           end case;
-          issue(cop, bit_of(d), fv(d), cm.v, x"00000000", d);
+          issue(cop, bit_of(d), ra, cm.v, x"00000000", d);
         end if;
       elsif cm.form = "10" then                          -- wide forms: Fd = Fs op Ft
         t := to_integer(unsigned(cm.v(7 downto 4)));
         case to_integer(cm.op) is
-          when W_VMOVE =>                                -- Vd = Vs, now
-            if (pv and (vmask(s) or vmask(d))) /= x"0000" then
-              stall := true;
-            else
-              for j in 0 to 3 loop
-                tmp4(j) := fv(4 * (s mod 4) + j);
-              end loop;
-              for j in 0 to 3 loop
-                fv(4 * (d mod 4) + j) := tmp4(j);
-              end loop;
-            end if;
-          when 16#11# to W_VNORM3 | W_MXV | W_MTXV =>   -- a sequence, once its registers are settled
+          when W_VMOVE to W_VNORM3 | W_MXV | W_MTXV =>   -- a sequence, once its registers are settled
             if (pv and (vmask(s) or vmask(t) or vmask(d) or bit_of(t) or bit_of(d))) /= x"0000" then
               stall := true;
             else
@@ -543,27 +588,31 @@ begin
               seq_t <= t;
               seq_d <= d;
             end if;
-          when W_MLOAD | W_MSTORE | W_MMUL =>            -- every F register
-            if pv /= x"0000" then
+          when W_MLOAD | W_MSTORE =>                     -- every F register, settled (nothing landing now)
+            if pendf /= x"0000" or pv /= x"0000" then
               stall := true;
             elsif cm.op = W_MLOAD then
-              mv := fv;
-            elsif cm.op = W_MSTORE then
-              fv := mv;
+              mv := f;
+            else
+              fv := mreg;
+            end if;
+          when W_MMUL =>
+            if pv /= x"0000" then
+              stall := true;
             else
               seq_active <= '1';
               seq_issued <= '0';
               upc <= ustart(W_MMUL);
               seq_op <= W_MMUL;
             end if;
-          when 0 => issue(16#01#, bit_of(d) or bit_of(s) or bit_of(t), fv(s), fv(t), fv(d), d);  -- FADD3
-          when 1 => issue(16#02#, bit_of(d) or bit_of(s) or bit_of(t), fv(s), fv(t), fv(d), d);  -- FSUB3
-          when 2 => issue(16#04#, bit_of(d) or bit_of(s) or bit_of(t), fv(s), fv(t), fv(d), d);  -- FMUL3
-          when 3 =>                                                                               -- FMA: Fs x Ft + Fd
-            issue(C_CORE_FMA, bit_of(d) or bit_of(s) or bit_of(t), fv(s), fv(t), fv(d), d);
-          when 4 =>                                                                               -- FMS: -Fs x Ft + Fd
-            issue(C_CORE_FMA, bit_of(d) or bit_of(s) or bit_of(t), (not fv(s)(31)) & fv(s)(30 downto 0),
-                  fv(t), fv(d), d);
+          when 0 => issue(16#01#, bit_of(d) or bit_of(s) or bit_of(t), ra, rb, rc, d);  -- FADD3
+          when 1 => issue(16#02#, bit_of(d) or bit_of(s) or bit_of(t), ra, rb, rc, d);  -- FSUB3
+          when 2 => issue(16#04#, bit_of(d) or bit_of(s) or bit_of(t), ra, rb, rc, d);  -- FMUL3
+          when 3 =>                                                                      -- FMA: Fs x Ft + Fd
+            issue(C_CORE_FMA, bit_of(d) or bit_of(s) or bit_of(t), ra, rb, rc, d);
+          when 4 =>                                                                      -- FMS: -Fs x Ft + Fd
+            issue(C_CORE_FMA, bit_of(d) or bit_of(s) or bit_of(t), (not ra(31)) & ra(30 downto 0),
+                  rb, rc, d);
           when others => rv := X_BAD;
         end case;
       else
@@ -673,7 +722,8 @@ begin
         end if;
       end if;
 
-      -- the core's results land (each unit's in the clock it gives it)
+      -- the core's results land (each unit's in the clock it gives it), and
+      -- FXCHG's second half
       fv := f;
       pv := pendf;
       pcd := pend_cond;
@@ -697,7 +747,13 @@ begin
       end if;
       if sh_done = '1' then
         k := to_integer(sh_tag(3 downto 0));
-        if sh_wf = '1' then fv(k) := sh_r; pv(k) := '0'; end if;
+        if sh_wf = '1' and sh_tag(4) = '1' then
+          tv(k) := sh_r;
+          tp(k) := '0';
+        elsif sh_wf = '1' then
+          fv(k) := sh_r;
+          pv(k) := '0';
+        end if;
         if sh_wc = '1' then mcv := sh_cond; pcd := '0'; end if;
         flv := flv or sh_flags;
       end if;
@@ -713,21 +769,69 @@ begin
         if it_wm = '1' then miv := it_mint; pmt := '0'; end if;
         flv := flv or it_flags;
       end if;
+      if xw = '1' then
+        fv(xd) := xb;
+        fv(xs) := xa;
+        pv(xd) := '0';
+        pv(xs) := '0';
+      end if;
+      xw <= '0';
+
+      -- the command in line (a program's, or the queue's head) or the
+      -- sequence's next step, its read indices, and the reads
+      if prog = '1' and ir_valid = '1' then
+        cand := unpack(ir);
+      elsif prog = '1' then
+        cand := unpack(pm_rdata);
+      else
+        cand := q(to_integer(qhead));
+      end if;
+      u := UCODE(upc);
+      cd := to_integer(cand.regs(7 downto 4));
+      cs_i := to_integer(cand.regs(3 downto 0));
+      ct := to_integer(unsigned(cand.v(7 downto 4)));
+      if seq_active = '1' then
+        fa_i := fidx(u.ak, u.ai);
+        fb_i := fidx(u.bk, u.bi);
+        fc_i := 0;
+      elsif cand.form = "10" then
+        fa_i := cs_i;
+        fb_i := ct;
+        fc_i := cd;
+      else
+        fa_i := cd;
+        fb_i := cs_i;
+        fc_i := 0;
+      end if;
+      ra := rdf(fa_i);
+      rb := rdf(fb_i);
+      rc := rdf(fc_i);
+      rtb := rdt(u.bi);
+      rtc := rdt(u.ci);
+      rma := mreg(u.ai);
 
       -- a command a clock, in order: a sequence's next step, a program's next
       -- command, or the queue's head
       deq := false;
       if seq_active = '1' then
         if seq_issued = '0' then                         -- the next step, once its T operands are in
-          u := UCODE(upc);
-          ua := opnd(u.ak, u.ai);
-          ub := opnd(u.bk, u.bi);
+          case u.ak is
+            when K_M => ua := rma;
+            when K_ONE => ua := x"3F800000";
+            when others => ua := ra;
+          end case;
+          case u.bk is
+            when K_T => ub := rtb;
+            when K_ONE => ub := x"3F800000";
+            when K_ZERO => ub := x"00000000";
+            when others => ub := rb;
+          end case;
           if u.ck = CK_NONE then
             uc := x"00000000";
           elsif u.ck = CK_T then
-            uc := tv(u.ci);
+            uc := rtc;
           else
-            uc := (not tv(u.ci)(31)) & tv(u.ci)(30 downto 0);
+            uc := (not rtc(31)) & rtc(30 downto 0);
           end if;
           ready := tp(u.dst) = '0' and (u.bk /= K_T or tp(u.bi) = '0')
                    and (u.ck = CK_NONE or tp(u.ci) = '0')
@@ -747,26 +851,15 @@ begin
               upc <= upc + 1;
             end if;
           end if;
-        elsif tp = x"0000" then                          -- every step back: the result into place
+        elsif pendt = x"0000" then                       -- every step back and settled: the result into place
           case seq_op is
             when W_VDOT3 | W_VDOT4 =>
-              fv(seq_d) := tv(0);
-            when W_VCROSS =>
-              for j in 0 to 2 loop
-                fv(4 * seq_vd + j) := tv(j);
-              end loop;
-              fv(4 * seq_vd + 3) := x"00000000";
-            when W_VNORM3 =>
-              w := fv(4 * seq_vs + 3);
-              for j in 0 to 2 loop
-                fv(4 * seq_vd + j) := tv(j);
-              end loop;
-              fv(4 * seq_vd + 3) := w;
+              fv(seq_d) := treg(0);
             when W_MMUL =>
-              mv := tv;
-            when others =>                               -- VADD, VSUB, VMUL, VSCALE, MXV, MTXV
+              mv := treg;
+            when others =>                               -- Vd = T0-T3
               for j in 0 to 3 loop
-                fv(4 * seq_vd + j) := tv(j);
+                fv(4 * seq_vd + j) := treg(j);
               end loop;
           end case;
           seq_active <= '0';
@@ -786,18 +879,13 @@ begin
           refill <= '0';
           fp <= fp + 1;
         else
-          if ir_valid = '1' then
-            x := unpack(ir);
-          else
-            x := unpack(pm_rdata);
-          end if;
           cnt := ppass;
           if abort_req = '1' then                          -- MPABORT
             prog <= '0'; mperr <= "011"; aborted <= '1'; mpcnt <= cnt(15 downto 0);
           elsif plimit /= 0 and pexec = plimit then        -- MPLIMIT
             prog <= '0'; mperr <= "010"; aborted <= '1'; mpcnt <= cnt(15 downto 0);
           else
-            dispatch(x, true, res);
+            dispatch(cand, true, res);
             if res = X_WAIT then
               if ir_valid = '0' then                       -- (pm_rdata moves on to pc + 1)
                 ir <= pm_rdata;
@@ -831,19 +919,18 @@ begin
         end if;
       -- else the queue's head: a PRUN starts a program
       elsif qcount /= 0 then
-        x := q(to_integer(qhead));
-        if x.form = "01" and x.op(3 downto 0) = "1110" then
+        if cand.form = "01" and cand.op(3 downto 0) = "1110" then
           deq := true;
           prog <= '1';
-          pc <= unsigned(x.v(8 downto 0));
-          fp <= unsigned(x.v(8 downto 0));
+          pc <= unsigned(cand.v(8 downto 0));
+          fp <= unsigned(cand.v(8 downto 0));
           refill <= '1';
           ir_valid <= '0';
-          pstart <= unsigned(x.v(8 downto 0));
-          if x.v(31 downto 16) = x"0000" then
+          pstart <= unsigned(cand.v(8 downto 0));
+          if cand.v(31 downto 16) = x"0000" then
             ptotal <= '1' & x"0000";
           else
-            ptotal <= '0' & unsigned(x.v(31 downto 16));
+            ptotal <= '0' & unsigned(cand.v(31 downto 16));
           end if;
           ppass <= (others => '0');
           pexec <= (others => '0');
@@ -851,7 +938,7 @@ begin
           mperr <= "000";
           abort_req <= '0';
         else
-          dispatch(x, false, res);
+          dispatch(cand, false, res);
           if res /= X_WAIT then
             deq := true;
             if res = X_BAD then
@@ -935,6 +1022,7 @@ begin
         mreg <= (others => (others => '0'));
         seq_active <= '0';
         seq_issued <= '0';
+        xw <= '0';
         c_start <= '0';
         c_abort <= '1';                                  -- (the core drops what is in flight)
         prog <= '0';

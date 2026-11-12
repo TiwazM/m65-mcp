@@ -1,7 +1,8 @@
 # MCP-3: geometry
 
 Spec, 2026-11-12. Decisions 1-6 taken as recommended (Steve, 2026-11-12).
-Stage 0 under way; nothing of MCP-3 itself built yet.
+Stage 0 (making room) built and checked in simulation and on a MEGA65 R6
+the same day ("Stage 0" below); nothing of MCP-3 itself built yet.
 
 MCP-3 does what m65tr3d's fixed-point vertex unit did (removed after MCP-2,
 MCP.md decision 4), on FP32:
@@ -228,6 +229,71 @@ As for MCP-1 and MCP-2:
    a demo mesh, the timings.
 3. **Light:** lighting in the standard program (no new hardware unless the
    timings call for it).
+
+## Stage 0 (2026-11-12)
+
+The MCP from 19,316 LUTs to 11,035 (-43%), the whole design from 70.8% of
+the A200T's LUTs to 64.6%. Nothing changes for software but a few
+commands' clocks.
+
+- **Where the LUTs were** (MCP2.md, "Stage 3b", "Size"): not in the
+  arithmetic but in the logic feeding the registers. Every place the code
+  read a register by an index (Fd, Fs, Ft, a vector's component) became its
+  own 16-way choice. And it chose among the registers as they would be
+  after this clock's results landed, so each of the 16 inputs was itself a
+  choice between the register and up to three results.
+- **What changed:**
+  - **Reads:** each clock, the command (or the micro-operation) in line
+    picks its indices first. Then each read port picks one register and
+    only then checks whether a result for it is landing now: three F
+    ports, two T ports, one M port.
+  - **FXCHG:** it read and wrote any register into any other, so each of
+    F's 512 bits had a 16-way choice for it alone. Now it reads its two
+    registers through the ports already there, and a small write port
+    puts them back the next clock.
+  - **VMOVE**, VNORM3's w and VCROSS's w = +0 are micro-operations, so
+    every vector result lands the same way: Vd from T0-T3.
+  - **The copies** (MLOAD, MSTORE, a vector or matrix result) wait until
+    nothing is landing, then copy the registers as they are, without the
+    bypass.
+  - **The core:** the multiply-add's alignment shifts the operand with the
+    lower top through one shared shifter instead of each having its own;
+    the conversions to an integer use one right shift instead of a left
+    and a right one.
+- **By the register the LUTs feed** (Vivado's names; the counts are LUT
+  cells):
+
+  | | Before | After |
+  |---|---|---|
+  | F0-F15 | 8,877 | 3,649 |
+  | the core's operand registers | 2,212 | 1,007 |
+  | the M bank | 1,845 | 533 |
+  | the multiply-add's alignment | 2,075 | 655 |
+  | the conversions' shifter | 971 | 742 |
+  | T0-T15 | 955 | 1,088 |
+  | FXCHG's write port | - | 523 |
+
+- **Clocks:** a vector or matrix command takes one clock more (its result
+  is copied a clock after the last step lands), VCROSS two, and VMOVE 7
+  instead of 1. Measured on the board (`demo/vtime`): VADD 11, VDOT3 18,
+  VDOT4 23, VCROSS 16, MXV and MTXV 26, MMUL 71, VNORM3 92. Everything
+  else is unchanged; the Mandelbrot is 10.3 ms as before.
+- **The checks:** all of MCP-1's and MCP-2's benches, unchanged, pass:
+  - the core: 26,245,680 vectors identical
+  - the front end: 24 seeds at both bus rates, 1,552,078 reads identical
+  - 9 new planted bugs, all caught: a read port without one of its
+    bypasses (the short unit's, FXCHG's), FXCHG writing one way only,
+    MLOAD or a vector result copying before everything has landed,
+    VNORM3's w from z, VCROSS's w not written, Vt read as Vs, the short
+    unit's results going to F instead of T
+  - FXCHG's bypass was at first caught on only half the seeds: `mcpgen`
+    (stage 3) now often follows an FXCHG in a program with a read of what
+    it swapped, and catches it on every seed tried
+- **The build:** WNS +0.041 ns, the worst paths in the HyperRAM controller;
+  the CPU clock's worst setup +0.871 ns, on a CPU path.
+- **The board:** a stage-3 script (seed 3), 10,516 reads identical; the
+  Mandelbrot exact (61.9 ms MCP-1, 10.3 ms MCP-2); the command clocks
+  above.
 
 ## Open points
 

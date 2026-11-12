@@ -347,8 +347,10 @@ begin
     variable zr : std_logic_vector(31 downto 0);
     variable psg, sp, sv : std_logic;
     variable sr : std_logic_vector(31 downto 0);
-    variable pfr, zfr : unsigned(75 downto 0);
-    variable pf, zf, bs : signed(11 downto 0);
+    variable pfr, zfr, sin, sout : unsigned(75 downto 0);
+    variable pf, zf, bs, amt : signed(11 downto 0);
+    variable pbig : boolean;
+    variable na : natural range 0 to 127;
     variable sum : unsigned(76 downto 0);
     variable sig : unsigned(26 downto 0);
     variable lz : natural;
@@ -439,15 +441,18 @@ begin
         bs := pf;
         fsign3 <= fsg2;
       else
+        -- one shifter: the operand with the lower top goes through it
         zf := fze2 - 52;
         zfr := shift_left(resize(zm2, 76), 52);
-        if pf >= zf then
-          bs := pf;
-          zfr := shr_sticky(zfr, to_integer(pf - zf));
+        pbig := pf >= zf;
+        if pbig then
+          bs := pf; amt := pf - zf; sin := zfr;
         else
-          bs := zf;
-          pfr := shr_sticky(pfr, to_integer(zf - pf));
+          bs := zf; amt := zf - pf; sin := pfr;
         end if;
+        if amt > 100 then na := 100; else na := to_integer(amt); end if;
+        sout := shr_sticky(sin, na);
+        if pbig then zfr := sout; else pfr := sout; end if;
         if fsg2 = zs2 then
           sum := ('0' & pfr) + ('0' & zfr);
           fsign3 <= fsg2;
@@ -787,7 +792,8 @@ begin
           end if;
 
         when S_CVT =>
-          -- the value as 32.32 fixed point: m * 2^(sh - 23 + 32), sh = e - 127 (+16 for FTOX)
+          -- the value as 32.32 fixed point: m * 2^(sh - 23 + 32), sh = e - 127 (+16 for
+          -- FTOX): m placed at bits 63-40 and shifted right by 40 - k (one shifter)
           k := to_integer(uy.e) - 127 + 9;
           if rop = OP_TOX then
             k := k + 16;
@@ -796,10 +802,10 @@ begin
           if uy.inf or k > 40 then
             cbig <= '1';
             v64 := (others => '0');
-          elsif k >= 0 then
-            v64 := shift_left(resize(uy.m, 64), k);
+          elsif k < -60 then
+            v64 := shr_sticky(shift_left(resize(uy.m, 64), 40), 100);
           else
-            v64 := shr_sticky(resize(uy.m, 64), -k);
+            v64 := shr_sticky(shift_left(resize(uy.m, 64), 40), 40 - k);
           end if;
           ci <= v64(63 downto 32);
           cg <= v64(31);
