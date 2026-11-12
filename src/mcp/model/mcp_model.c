@@ -1,4 +1,4 @@
-/* mcp_model: the reference for the M65-MCP (spec in mcp_model.h, src/mcp/MCP1.md, MCP2.md). */
+/* mcp_model: the reference for the M65-MCP (spec in mcp_model.h, src/mcp/MCP1.md, MCP2.md, MCP3.md). */
 #include <string.h>
 #include "softfloat.h"
 #include "mcp_model.h"
@@ -153,13 +153,110 @@ uint32_t mcp_fma(uint32_t a, uint32_t b, uint32_t c, int rmode, uint8_t *flags)
 
 void mcp_reset(mcp_state *s)
 {
-    static mcp_cmd keep[512];                       /* (MRESET keeps the program memory) */
+    static mcp_cmd keep[512];                       /* (MRESET keeps the program memory, */
+    static uint8_t vin[16384], vout[32768];         /*  the vertex array, the result buffer) */
     int stage = s->stage;
     memcpy(keep, s->prog, sizeof keep);
+    memcpy(vin, s->vin, sizeof vin);
+    memcpy(vout, s->vout, sizeof vout);
     memset(s, 0, sizeof *s);
     memcpy(s->prog, keep, sizeof keep);
+    memcpy(s->vin, vin, sizeof vin);
+    memcpy(s->vout, vout, sizeof vout);
     s->stage = stage;
     s->mplimit = 0x100000;
+}
+
+/* ---- the vertex path (stage 4) ---- */
+
+int mcp_vfmt_size(int fmt)
+{
+    return (fmt & 1 ? 12 : 8) + (fmt & 2 ? 4 : 0) + (fmt & 4 ? 4 : 0) + 4 * ((fmt >> 3) & 3);
+}
+
+int mcp_vfmt_offset(int fmt, int field)
+{
+    int pos = fmt & 1 ? 12 : 8, nrm = fmt & 2 ? 4 : 0, col = fmt & 4 ? 4 : 0;
+    switch (field) {
+    case 0: return 0;
+    case 1: return nrm ? pos : -1;
+    case 2: return col ? pos + nrm : -1;
+    default: return (fmt >> 3) & 3 ? pos + nrm + col : -1;
+    }
+}
+
+/* an integer i (|i| < 2^16) times 2^-k as FP32: exact */
+static uint32_t int_scaled(int32_t i, int k)
+{
+    uint32_t r = i32_to_f32(i).v;
+    return (r & 0x7FFFFFFF) ? r - ((uint32_t)k << 23) : r;
+}
+
+/* the vertex array's word at byte address a (bits 1-0 ignored), little-endian */
+static uint32_t vin_word(const mcp_state *s, int a)
+{
+    a &= 0x3FFC;
+    return (uint32_t)s->vin[a] | (uint32_t)s->vin[a + 1] << 8 | (uint32_t)s->vin[a + 2] << 16
+           | (uint32_t)s->vin[a + 3] << 24;
+}
+
+uint32_t mcp_vout_conv(uint32_t v, int fmt, int rm, uint8_t *flags)
+{
+    static const struct { int k; int64_t lo, hi; } c[] = {
+        [MCPV_S12_4] = {4, -32768, 32767}, [MCPV_U16] = {16, 0, 65535}, [MCPV_S16] = {0, -32768, 32767},
+        [MCPV_S16_16] = {16, -2147483648LL, 2147483647LL}, [MCPV_U8] = {8, 0, 255}
+    };
+    if (fmt == MCPV_F32 || fmt == MCPV_F32HI) return v;
+    /* v x 2^k exactly in f64, rounded to an integer by MCTRL's mode; NaN 0;
+     * out of the format's range: the bound, invalid only */
+    softfloat_exceptionFlags = 0;
+    float64_t x = f64_mul(f32_to_f64(F(v)), (float64_t){(uint64_t)(1023 + c[fmt].k) << 52});
+    int64_t n = f64_to_i64(x, sf_mode(rm), true);
+    uint8_t fl = mflags_of(softfloat_exceptionFlags);
+    if (is_nan(v)) {
+        n = 0;
+        fl = MCP_FL_INVALID;
+    } else if (n < c[fmt].lo || n > c[fmt].hi || (softfloat_exceptionFlags & softfloat_flag_invalid)) {
+        n = (v >> 31) ? c[fmt].lo : c[fmt].hi;
+        fl = MCP_FL_INVALID;
+    }
+    *flags |= fl;
+    return (uint32_t)n;
+}
+
+/* the result buffer: n bytes of v at the current entry's byte off */
+static void vout_put(mcp_state *s, int off, uint32_t v, int n)
+{
+    int base = (s->vtxidx & 1023) * 32;
+    for (int k = 0; k < n; k++) s->vout[base + ((off + k) & 31)] = (uint8_t)(v >> (8 * k));
+}
+
+/* VIN Vd, field t: X_OK or X_BAD */
+static int exec_vin(mcp_state *s, int d, int t)
+{
+    int fmt = s->vfmt, off = mcp_vfmt_offset(fmt, t);
+    uint32_t *vd = &s->f[4 * (d & 3)], r[4];
+    if (t > 2 || off < 0) return 3;                 /* (X_BAD, defined below) */
+    int a = s->vinidx + off;
+    if (t == 0 && (fmt & 1)) {                      /* FP32 x, y, z: as they are */
+        for (int k = 0; k < 3; k++) r[k] = vin_word(s, a + 4 * k);
+        r[3] = 0x3F800000;
+    } else if (t == 0) {                            /* s16 x, y, z: x 2^-VPOSEXP */
+        uint32_t w0 = vin_word(s, a), w1 = vin_word(s, a + 4);
+        r[0] = int_scaled((int16_t)(w0 & 0xFFFF), s->vposexp & 15);
+        r[1] = int_scaled((int16_t)(w0 >> 16), s->vposexp & 15);
+        r[2] = int_scaled((int16_t)(w1 & 0xFFFF), s->vposexp & 15);
+        r[3] = 0x3F800000;
+    } else if (t == 1) {                            /* s8 nx, ny, nz: x 2^-7 */
+        uint32_t w = vin_word(s, a);
+        for (int k = 0; k < 3; k++) r[k] = int_scaled((int8_t)(w >> (8 * k)), 7);
+        r[3] = 0;
+    } else {                                        /* u8 r, g, b, a: x 2^-8 */
+        uint32_t w = vin_word(s, a);
+        for (int k = 0; k < 4; k++) r[k] = int_scaled((int32_t)((w >> (8 * k)) & 255), 8);
+    }
+    memcpy(vd, r, sizeof r);
+    return 0;
 }
 
 /* ---- commands ---- */
@@ -233,6 +330,17 @@ static int exec_wide(mcp_state *s, int op, int r1, int r2)
             break;
         }
         }
+    } else if (s->stage >= 4 && op == MCPW_VIN) {
+        if (exec_vin(s, d, t)) return X_BAD;
+    } else if (s->stage >= 4 && op == MCPW_VOUT) {   /* Fs in format d at byte 2t */
+        static const int width[MCPV_NFMT] = {4, 2, 2, 2, 2, 4};
+        if (d >= MCPV_NFMT || (width[d] == 4 && (t & 1))) return X_BAD;
+        uint32_t v = mcp_vout_conv(s->f[a], d, rm, &fl);
+        if (d == MCPV_F32HI) v >>= 16;
+        vout_put(s, 2 * t, v, width[d]);
+    } else if (s->stage >= 4 && op == MCPW_VOUTC) {  /* Vs as four bytes at byte 2t */
+        if (t & 1) return X_BAD;
+        for (int k = 0; k < 4; k++) vout_put(s, 2 * t + k, mcp_vout_conv(vs[k], MCPV_U8, rm, &fl), 1);
     } else if (s->stage >= 3 && op >= MCPW_MLOAD && op <= MCPW_MMUL) {
         switch (op) {
         case MCPW_MLOAD: memcpy(s->m, s->f, sizeof s->m); break;
@@ -282,6 +390,19 @@ static int exec_cmd(mcp_state *s, const mcp_cmd *c, int in_prog)
             return in_prog && (s->mcond & c->regs) ? X_EXIT : X_OK;
         if (s->stage >= 1 && op == MCP_PEND)
             return in_prog ? X_END : X_OK;
+        if (s->stage >= 4 && op == MCP_VNEXT) {
+            s->vinidx = (uint16_t)((s->vinidx + mcp_vfmt_size(s->vfmt)) & 0x3FFC);
+            return X_OK;
+        }
+        if (s->stage >= 4 && op == MCP_VEND) {
+            s->vtxidx = (uint16_t)((s->vtxidx + 1) & 1023);
+            return X_OK;
+        }
+        if (s->stage >= 4 && op == MCP_VPASS) {           /* the attribute words, to entry word data + k */
+            int n = (s->vfmt >> 3) & 3, a = s->vinidx + mcp_vfmt_offset(s->vfmt, 3);
+            for (int k = 0; k < n; k++) vout_put(s, 4 * ((c->regs + k) & 7), vin_word(s, a + 4 * k), 4);
+            return X_OK;
+        }
         if (op >= (s->stage >= 1 ? MCP_NREGOPS2 : MCP_NREGOPS)) r = X_BAD;
         else {
             core = op;
@@ -441,4 +562,47 @@ void mcp_mpread(const mcp_state *s, uint8_t out[8])
 uint8_t mcp_status(const mcp_state *s)
 {
     return (uint8_t)((s->mflags ? 0x80 : 0) | s->sticky);
+}
+
+void mcp_vin_write(mcp_state *s, uint8_t byte)
+{
+    s->vin[s->vinptr & 0x3FFF] = byte;
+    s->vinptr = (uint16_t)((s->vinptr + 1) & 0x3FFF);
+}
+
+void mcp_vreg_write(mcp_state *s, int off, uint8_t v)
+{
+    switch (off) {
+    case 0x04: s->vinptr = (uint16_t)((s->vinptr & 0x3F00) | v); break;
+    case 0x05: s->vinptr = (uint16_t)((s->vinptr & 0x00FF) | (v & 0x3F) << 8); break;
+    case 0x06: s->vinidx = (uint16_t)((s->vinidx & 0x3F00) | (v & 0xFC)); break;
+    case 0x07: s->vinidx = (uint16_t)((s->vinidx & 0x00FC) | (v & 0x3F) << 8); break;
+    case 0x08: s->vfmt = v & 0x1F; break;
+    case 0x09: s->vposexp = v & 0x0F; break;
+    case 0x0C: s->vtxidx = (uint16_t)((s->vtxidx & 0x300) | v); break;
+    case 0x0D: s->vtxidx = (uint16_t)((s->vtxidx & 0x0FF) | (v & 3) << 8); break;
+    case 0x0E: s->vbank = v & 0x0F; break;
+    default: break;
+    }
+}
+
+uint8_t mcp_vreg_read(const mcp_state *s, int off)
+{
+    switch (off) {
+    case 0x04: return (uint8_t)s->vinptr;
+    case 0x05: return (uint8_t)(s->vinptr >> 8);
+    case 0x06: return (uint8_t)s->vinidx;
+    case 0x07: return (uint8_t)(s->vinidx >> 8);
+    case 0x08: return s->vfmt;
+    case 0x09: return s->vposexp;
+    case 0x0C: return (uint8_t)s->vtxidx;
+    case 0x0D: return (uint8_t)(s->vtxidx >> 8);
+    case 0x0E: return s->vbank;
+    default: return 0;
+    }
+}
+
+uint8_t mcp_window_read(const mcp_state *s, int off)
+{
+    return s->vout[((s->vbank & 15) * 2048 + (off & 2047)) & 32767];
 }

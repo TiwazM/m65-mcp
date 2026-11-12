@@ -17,6 +17,9 @@
 --     (a result bit a clock), rounding to an integer, conversions to and
 --     from integers. One operation at a time (it_busy): divide and square
 --     root 33 clocks, the rest 7.
+--   the converter (MCP-3): b x 2^k rounded to a saturated 8, 16 or 32-bit
+--     integer, or b's bits as they are, for VOUT and VOUTC (MCP3.md). An
+--     operation a clock, its result in the clock after start.
 --
 -- The caller holds op, a, b, c, rm and tag in registers for the clock of
 -- start; each result comes back with its tag. Results can come back in any
@@ -31,6 +34,7 @@ package mcp_fpu_pkg is
   constant U_FMA   : natural := 0;
   constant U_SHORT : natural := 1;
   constant U_ITER  : natural := 2;
+  constant U_CV    : natural := 3;
   function fpu_unit(op : unsigned(4 downto 0)) return natural;
 end package;
 
@@ -43,6 +47,8 @@ package body mcp_fpu_pkg is
       when 16#05# | 16#06# | 16#0A# | 16#0D# | 16#0E# | 16#10# | 16#11# | 16#12# | 16#13#
          | 16#1C# | 16#1D# =>
         return U_ITER;
+      when 16#16# to 16#1B# =>
+        return U_CV;
       when others =>
         return U_SHORT;                         -- (and anything else: nothing written)
     end case;
@@ -81,7 +87,11 @@ entity mcp_fpu is
     it_r     : out std_logic_vector(31 downto 0);
     it_mint  : out std_logic_vector(31 downto 0);
     it_flags : out std_logic_vector(4 downto 0);
-    it_wf, it_wm : out std_logic
+    it_wf, it_wm : out std_logic;
+    cv_done  : out std_logic;                      -- the converter: the bits to store
+    cv_tag   : out unsigned(7 downto 0);
+    cv_r     : out std_logic_vector(31 downto 0);
+    cv_flags : out std_logic_vector(4 downto 0)
     );
 end mcp_fpu;
 
@@ -112,6 +122,14 @@ architecture rtl of mcp_fpu is
   constant OP_ILD   : natural := 16#1C#;
   constant OP_XLD   : natural := 16#1D#;
   constant OP_FMA   : natural := 16#1E#;    -- a x b + c, rounded once (MCP-2)
+  -- the converter's (MCP-3): b as it is, s16 x 16 (12.4), u16 x 2^16, s16,
+  -- s32 x 2^16 (16.16), u8 x 2^8
+  constant OP_CVRAW  : natural := 16#16#;
+  constant OP_CV124  : natural := 16#17#;
+  constant OP_CVU16  : natural := 16#18#;
+  constant OP_CVS16  : natural := 16#19#;
+  constant OP_CVS32  : natural := 16#1A#;
+  constant OP_CVU8   : natural := 16#1B#;
 
   constant DNAN : std_logic_vector(31 downto 0) := x"7FC00000";
   constant Z23  : std_logic_vector(22 downto 0) := (others => '0');
@@ -313,6 +331,15 @@ architecture rtl of mcp_fpu is
   signal qs4 : std_logic := '0';                             -- 4: the rounder's input
   signal qe4 : signed(11 downto 0) := (others => '0');
   signal qsig4 : unsigned(26 downto 0) := (others => '0');
+
+  -- the converter: its one stage's registers
+  signal cv1 : std_logic := '0';
+  signal cvt1 : unsigned(7 downto 0) := (others => '0');
+  signal cvop1 : natural range 0 to 31 := 0;
+  signal cvrm1 : unsigned(1 downto 0) := "00";
+  signal cvraw1 : std_logic_vector(31 downto 0) := (others => '0');
+  signal cvs1, cvnan1, cvbig1, cvg1, cvst1 : std_logic := '0';
+  signal cvi1 : unsigned(31 downto 0) := (others => '0');
 
   -- the iterative unit
   type state_t is (S_IDLE, S_UNPACK, S_SPECIAL, S_DIV, S_SQRT, S_CVT, S_CVT2, S_ILD, S_ROUND, S_DONE);
@@ -598,6 +625,90 @@ begin
     sh_wc <= wc;
     sh_done <= start and b2l(fpu_unit(op) = U_SHORT) and not abort;
     sh_tag <= tag;
+  end process;
+
+  ---------------------------------------------------------------------------
+  -- the converter: b x 2^k as 32.32 fixed point (b's significand at bits
+  -- 63-40, shifted right by 40 - k), then rounded and saturated
+  ---------------------------------------------------------------------------
+
+  process (clock)
+    variable y : unp_t;
+    variable k, sc : integer;
+    variable v64 : unsigned(63 downto 0);
+  begin
+    if rising_edge(clock) then
+      cv1 <= start and b2l(fpu_unit(op) = U_CV) and not abort;
+      cvt1 <= tag;
+      cvop1 <= to_integer(op);
+      cvrm1 <= rm;
+      cvraw1 <= b;
+      y := unpack(b);
+      case to_integer(op) is
+        when OP_CV124 => sc := 4;
+        when OP_CVU16 | OP_CVS32 => sc := 16;
+        when OP_CVU8 => sc := 8;
+        when others => sc := 0;
+      end case;
+      k := to_integer(y.e) - 127 + 9 + sc;
+      cvs1 <= y.s;
+      cvnan1 <= b2l(y.nan);
+      cvbig1 <= '0';
+      if y.inf or k > 40 then
+        cvbig1 <= '1';
+        v64 := (others => '0');
+      elsif k < -60 then
+        v64 := shr_sticky(shift_left(resize(y.m, 64), 40), 100);
+      else
+        v64 := shr_sticky(shift_left(resize(y.m, 64), 40), 40 - k);
+      end if;
+      cvi1 <= v64(63 downto 32);
+      cvg1 <= v64(31);
+      if v64(30 downto 0) /= 0 then cvst1 <= '1'; else cvst1 <= '0'; end if;
+    end if;
+  end process;
+
+  process (cv1, cvt1, cvop1, cvrm1, cvraw1, cvs1, cvnan1, cvbig1, cvg1, cvst1, cvi1, abort)
+    variable n33, lim : unsigned(32 downto 0);
+    variable r : std_logic_vector(31 downto 0);
+    variable fl : std_logic_vector(4 downto 0);
+    variable uns : boolean;
+  begin
+    n33 := ('0' & cvi1) + u1(incr(cvrm1, cvs1, cvi1(0), cvg1, cvst1));
+    uns := cvop1 = OP_CVU16 or cvop1 = OP_CVU8;
+    case cvop1 is
+      when OP_CVU16 => lim := to_unsigned(65535, 33);
+      when OP_CVU8 => lim := to_unsigned(255, 33);
+      when OP_CVS32 => lim := to_unsigned(2147483647, 33);
+      when others => lim := to_unsigned(32767, 33);
+    end case;
+    if cvs1 = '1' then                          -- the negative bound: -(lim + 1), or 0 unsigned
+      if uns then lim := (others => '0'); else lim := lim + 1; end if;
+    end if;
+    fl := "00000";
+    if cvop1 = OP_CVRAW then
+      r := cvraw1;
+    elsif cvnan1 = '1' then
+      r := (others => '0'); fl(0) := '1';
+    elsif cvbig1 = '1' or n33 > lim then        -- saturated, invalid
+      fl(0) := '1';
+      if cvs1 = '1' then
+        r := std_logic_vector(0 - lim(31 downto 0));
+      else
+        r := std_logic_vector(lim(31 downto 0));
+      end if;
+    else
+      if cvs1 = '1' then
+        r := std_logic_vector(0 - n33(31 downto 0));
+      else
+        r := std_logic_vector(n33(31 downto 0));
+      end if;
+      fl(4) := cvg1 or cvst1;
+    end if;
+    cv_r <= r;
+    cv_flags <= fl;
+    cv_done <= cv1 and not abort;
+    cv_tag <= cvt1;
   end process;
 
   ---------------------------------------------------------------------------

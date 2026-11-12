@@ -20,8 +20,12 @@
 -- units, into temporaries T0-T15 with their own scoreboard, and land in F
 -- or M in one clock when the last has come back. A sequence holds the
 -- issue until then. Command by command bit-exact against
--- src/mcp/model/mcp_model.c (stage 3): the order of the results is the
--- scoreboard's business, never visible.
+-- src/mcp/model/mcp_model.c (stage 4): the order of the results is the
+-- scoreboard's business, never visible. MCP-3 stage 1 (src/mcp/MCP3.md):
+-- the vertex array (VINDATA, $000-$003; 4 x 4 KB of block RAM) and the
+-- result buffer (4 x 8 KB, read through the window at $800-$FFF); VIN as a
+-- sequence of loads into T0-T3, VOUT through the core's converter, VOUTC
+-- and VPASS as sequences of stores and copies, VNEXT and VEND at once.
 
 library ieee;
 use ieee.std_logic_1164.all;
@@ -43,7 +47,7 @@ end mcp;
 architecture rtl of mcp is
 
   constant ID_VALUE  : unsigned(7 downto 0) := x"4D";   -- "M"
-  constant VER_VALUE : unsigned(7 downto 0) := x"02";   -- MCP-2
+  constant VER_VALUE : unsigned(7 downto 0) := x"03";   -- MCP-3
   constant QN : integer := 16;
   constant LIMIT_RESET : unsigned(23 downto 0) := x"100000";
 
@@ -54,6 +58,9 @@ architecture rtl of mcp is
   constant C_PEXIT    : integer := 16#18#;
   constant C_PEND     : integer := 16#19#;
   constant C_NREGOPS  : integer := 16#1A#;
+  constant C_VNEXT    : integer := 16#1A#;     -- MCP-3
+  constant C_VPASS    : integer := 16#1B#;
+  constant C_VEND     : integer := 16#1E#;
   constant C_CORE_FMA : integer := 16#1E#;     -- the core's a x b + c
 
   -- what a command did (dispatch)
@@ -88,6 +95,18 @@ architecture rtl of mcp is
   constant W_MXV    : integer := 16#22#;
   constant W_MTXV   : integer := 16#23#;
   constant W_MMUL   : integer := 16#24#;
+  constant W_VIN    : integer := 16#25#;
+  constant W_VOUT   : integer := 16#26#;
+  constant W_VOUTC  : integer := 16#27#;
+  constant SEQ_VPASS : integer := 16#41#;       -- (VPASS's sequence: not a wide form)
+
+  -- the core's converter (MCP-3): b as it is, 12.4, u16 x 2^16, s16, 16.16, u8 x 2^8
+  constant CV_RAW : integer := 16#16#;
+  constant CV_124 : integer := 16#17#;
+  constant CV_U16 : integer := 16#18#;
+  constant CV_S16 : integer := 16#19#;
+  constant CV_S32 : integer := 16#1A#;
+  constant CV_U8  : integer := 16#1B#;
 
   -- a micro-operation: the core's op, its operands a and b (a kind and an
   -- index: Vs's, Vt's component, F[t], an F, an M, 1.0, a T, 0), its addend
@@ -103,14 +122,27 @@ architecture rtl of mcp is
   constant CK_NONE : natural := 0;
   constant CK_T    : natural := 1;
   constant CK_NEGT : natural := 2;
+  -- kinds: a core operation; VLD, a vertex field's component into T[dst]
+  -- (field fld, its word wd, converted by cvc: 0 as it is, 1-2 s16 low and
+  -- high x 2^-VPOSEXP, 4-7 s8 byte n x 2^-7, 8-11 u8 byte n x 2^-8); VST, the
+  -- converter's result (op, operand b) into the entry at byte 2 x seq_off +
+  -- sk; VCOPY, the vertex's attribute word wd into the entry's word
+  -- seq_off + wd
+  constant UK_CORE  : natural := 0;
+  constant UK_VLD   : natural := 1;
+  constant UK_VST   : natural := 2;
+  constant UK_VCOPY : natural := 3;
   type uop_t is record
     op           : natural range 0 to 31;
     ak, bk, ck   : natural range 0 to 7;
     ai, bi, ci   : natural range 0 to 15;
     dst          : natural range 0 to 15;
     last         : boolean;
+    vk           : natural range 0 to 3;
+    fld, wd, sk  : natural range 0 to 3;
+    cvc          : natural range 0 to 15;
   end record;
-  constant NUOPS : natural := 139;
+  constant NUOPS : natural := 162;
   type ucode_t is array (0 to NUOPS - 1) of uop_t;
 
   function uo(op, ak, ai, bk, bi, ck, ci, dst : natural; last : boolean) return uop_t is
@@ -118,6 +150,16 @@ architecture rtl of mcp is
   begin
     r.op := op; r.ak := ak; r.ai := ai; r.bk := bk; r.bi := bi; r.ck := ck; r.ci := ci;
     r.dst := dst; r.last := last;
+    r.vk := UK_CORE; r.fld := 0; r.wd := 0; r.sk := 0; r.cvc := 0;
+    return r;
+  end function;
+
+  -- a vertex micro-operation (VLD, VCOPY)
+  function uv(vk, fld, wd, cvc, dst : natural; last : boolean) return uop_t is
+    variable r : uop_t;
+  begin
+    r := uo(0, K_ONE, 0, K_ONE, 0, CK_NONE, 0, dst, last);
+    r.vk := vk; r.fld := fld; r.wd := wd; r.cvc := cvc;
     return r;
   end function;
 
@@ -190,6 +232,30 @@ architecture rtl of mcp is
     for k in 0 to 3 loop                          -- VMOVE (135): Tk = Vs.k (moves)
       u(n) := uo(C_CORE_MOVE, K_ONE, 0, K_VS, k, CK_NONE, 0, k, k = 3); n := n + 1;
     end loop;
+    -- VIN (139: s16 position, 143: FP32 position, 147: normal, 151: colour):
+    -- T0-T3, then Vd = T0-T3 as any vector result
+    u(n) := uv(UK_VLD, 0, 0, 1, 0, false); n := n + 1;
+    u(n) := uv(UK_VLD, 0, 0, 2, 1, false); n := n + 1;
+    u(n) := uv(UK_VLD, 0, 1, 1, 2, false); n := n + 1;
+    u(n) := uo(C_CORE_MOVE, K_ONE, 0, K_ONE, 0, CK_NONE, 0, 3, true); n := n + 1;
+    for k in 0 to 2 loop
+      u(n) := uv(UK_VLD, 0, k, 0, k, false); n := n + 1;
+    end loop;
+    u(n) := uo(C_CORE_MOVE, K_ONE, 0, K_ONE, 0, CK_NONE, 0, 3, true); n := n + 1;
+    for k in 0 to 2 loop
+      u(n) := uv(UK_VLD, 1, 0, 4 + k, k, false); n := n + 1;
+    end loop;
+    u(n) := uo(C_CORE_MOVE, K_ONE, 0, K_ZERO, 0, CK_NONE, 0, 3, true); n := n + 1;
+    for k in 0 to 3 loop
+      u(n) := uv(UK_VLD, 2, 0, 8 + k, k, k = 3); n := n + 1;
+    end loop;
+    for k in 0 to 3 loop                          -- VOUTC (155): Vs.k as a byte
+      u(n) := uo(CV_U8, K_ONE, 0, K_VS, k, CK_NONE, 0, 0, k = 3);
+      u(n).vk := UK_VST; u(n).sk := k; n := n + 1;
+    end loop;
+    for k in 2 downto 0 loop                      -- VPASS (159): the attribute words, from 162 - n
+      u(n) := uv(UK_VCOPY, 3, k, 0, 0, k = 0); n := n + 1;
+    end loop;
     assert n = NUOPS report "UCODE: " & integer'image(n) & " entries" severity failure;
     return u;
   end function;
@@ -210,6 +276,7 @@ architecture rtl of mcp is
       when 16#22# => return 39;                   -- MXV
       when 16#23# => return 55;                   -- MTXV
       when 16#10# => return 135;                  -- VMOVE
+      when 16#27# => return 155;                  -- VOUTC
       when others => return 71;                   -- MMUL
     end case;
   end function;
@@ -282,6 +349,73 @@ architecture rtl of mcp is
   end function;
 
   -- the fastio side
+  -- the vertex format (MCP3.md, in words): the position's 2 (s16) or 3
+  -- (FP32), a field's offset (0 position, 1 normal, 2 colour, 3 the
+  -- attributes), the vertex's size
+  function vf_pos(f : unsigned(4 downto 0)) return natural is
+  begin
+    if f(0) = '1' then return 3; end if;
+    return 2;
+  end function;
+  function vf_off(f : unsigned(4 downto 0); fld : natural) return natural is
+    variable o : natural;
+  begin
+    o := vf_pos(f);
+    if fld = 0 then return 0; end if;
+    if fld = 1 then return o; end if;
+    if f(1) = '1' then o := o + 1; end if;
+    if fld = 2 then return o; end if;
+    if f(2) = '1' then o := o + 1; end if;
+    return o;
+  end function;
+  function vf_size(f : unsigned(4 downto 0)) return natural is
+  begin
+    return vf_off(f, 3) + to_integer(f(4 downto 3));
+  end function;
+
+  -- an integer, sign and 16-bit magnitude, times 2^-sc as FP32: exact
+  function i2f(neg : std_logic; mag : unsigned(15 downto 0); sc : natural) return std_logic_vector is
+    variable lz : natural := 0;
+    variable m : unsigned(15 downto 0);
+  begin
+    if mag = 0 then
+      return x"00000000";
+    end if;
+    for i in 15 downto 0 loop
+      if mag(i) = '1' then exit; end if;
+      lz := lz + 1;
+    end loop;
+    m := shift_left(mag, lz);
+    return neg & std_logic_vector(to_unsigned(127 + 15 - lz - sc, 8)) & std_logic_vector(m(14 downto 0))
+           & x"00";
+  end function;
+
+  -- a VLD's conversion of the vertex array's word w (cvc: as for uop_t)
+  function vconv(w : std_logic_vector(31 downto 0); cvc : natural; pexp : unsigned(3 downto 0))
+    return std_logic_vector is
+    variable h : signed(15 downto 0);
+    variable b : std_logic_vector(7 downto 0);
+    variable a17 : signed(16 downto 0);
+    variable n : natural;
+  begin
+    case cvc is
+      when 1 | 2 =>                                   -- s16 x 2^-VPOSEXP
+        if cvc = 1 then h := signed(w(15 downto 0)); else h := signed(w(31 downto 16)); end if;
+        a17 := abs(resize(h, 17));
+        return i2f(h(15), unsigned(a17(15 downto 0)), to_integer(pexp));
+      when 4 to 7 =>                                  -- s8 x 2^-7
+        n := cvc - 4;
+        b := w(8 * n + 7 downto 8 * n);
+        a17 := abs(resize(signed(b), 17));
+        return i2f(b(7), unsigned(a17(15 downto 0)), 7);
+      when 8 to 11 =>                                 -- u8 x 2^-8
+        n := cvc - 8;
+        return i2f('0', resize(unsigned(w(8 * n + 7 downto 8 * n)), 16), 8);
+      when others =>
+        return w;
+    end case;
+  end function;
+
   signal last_rd, last_wr : std_logic := '0';
   signal last_addr        : unsigned(11 downto 0) := (others => '0');
   signal rd_new, wr_new   : std_logic;
@@ -323,6 +457,40 @@ architecture rtl of mcp is
   signal xw : std_logic := '0';
   signal xd, xs : natural range 0 to 15 := 0;
   signal xa, xb : std_logic_vector(31 downto 0) := (others => '0');
+  signal seq_off : natural range 0 to 15 := 0;               -- VOUTC's t, VPASS's word
+
+  -- the vertex path (MCP-3): the registers
+  signal vinptr : unsigned(13 downto 0) := (others => '0');   -- VINDATA's byte address
+  signal vinidx : unsigned(11 downto 0) := (others => '0');   -- the vertex VIN reads, a word address
+  signal vfmt : unsigned(4 downto 0) := (others => '0');
+  signal vposexp : unsigned(3 downto 0) := (others => '0');
+  signal vtxidx : unsigned(9 downto 0) := (others => '0');
+  signal vbank : unsigned(3 downto 0) := (others => '0');
+  -- the vertex array and the result buffer: four byte lanes each
+  type lane8_t is array (0 to 3) of std_logic_vector(7 downto 0);
+  signal va_we, rb_we : std_logic_vector(3 downto 0) := (others => '0');
+  signal va_waddr, va_raddr : unsigned(11 downto 0) := (others => '0');
+  signal va_wdata : std_logic_vector(7 downto 0) := (others => '0');
+  signal va_rd, rb_wd, rb_rd : lane8_t;
+  signal rb_waddr, rb_raddr : unsigned(12 downto 0) := (others => '0');
+  -- the stores and copies into the result buffer, two clocks from issue
+  -- to their data (the converter's result, or the vertex array's word)
+  type sd_t is record
+    valid, copy, hi : std_logic;
+    entry : unsigned(9 downto 0);
+    boff : unsigned(4 downto 0);
+    width : natural range 1 to 4;
+  end record;
+  constant SD_NONE : sd_t := (valid => '0', copy => '0', hi => '0', entry => (others => '0'),
+                              boff => (others => '0'), width => 1);
+  signal sd_a, sd_b : sd_t := SD_NONE;
+  -- the loads into T, two clocks from issue to the vertex array's word
+  type vd_t is record
+    valid : std_logic;
+    dst : natural range 0 to 15;
+    cvc : natural range 0 to 15;
+  end record;
+  signal vd_a, vd_b : vd_t := (valid => '0', dst => 0, cvc => 0);
 
   -- programs
   signal pm_we : std_logic := '0';
@@ -356,6 +524,10 @@ architecture rtl of mcp is
   signal sh_cond : std_logic_vector(7 downto 0);
   signal fm_flags, sh_flags, it_flags : std_logic_vector(4 downto 0);
   signal sh_wf, sh_wc, it_wf, it_wm : std_logic;
+  signal cv_done : std_logic;
+  signal cv_tag : unsigned(7 downto 0);
+  signal cv_r : std_logic_vector(31 downto 0);
+  signal cv_flags : std_logic_vector(4 downto 0);
 
   signal busy : std_logic;
   signal rbyte : unsigned(7 downto 0);
@@ -369,7 +541,8 @@ begin
               sh_done => sh_done, sh_tag => sh_tag, sh_r => sh_r, sh_cond => sh_cond,
               sh_flags => sh_flags, sh_wf => sh_wf, sh_wc => sh_wc,
               it_done => it_done, it_tag => it_tag, it_r => it_r, it_mint => it_mint,
-              it_flags => it_flags, it_wf => it_wf, it_wm => it_wm);
+              it_flags => it_flags, it_wf => it_wf, it_wm => it_wm,
+              cv_done => cv_done, cv_tag => cv_tag, cv_r => cv_r, cv_flags => cv_flags);
 
   -- the program memory: written by MPLOAD; read by the program (at pc) or by
   -- MPREAD (at MPPTR) when no program runs
@@ -378,9 +551,23 @@ begin
               raddr => pm_raddr, rdata => pm_rdata);
   pm_raddr <= fp when prog = '1' else mpptr;
 
+  -- the vertex array (written by VINDATA, read by VLD and VCOPY) and the
+  -- result buffer (written by stores and copies, read through the window:
+  -- its address follows the bus's, the CPU's wait state covers the clock)
+  lanes : for j in 0 to 3 generate
+    va_ram : entity work.mcp_ram generic map (AW => 12, DW => 8)
+      port map (clock => clock, we => va_we(j), waddr => va_waddr, wdata => va_wdata,
+                raddr => va_raddr, rdata => va_rd(j));
+    rb_ram : entity work.mcp_ram generic map (AW => 13, DW => 8)
+      port map (clock => clock, we => rb_we(j), waddr => rb_waddr, wdata => rb_wd(j),
+                raddr => rb_raddr, rdata => rb_rd(j));
+  end generate;
+  rb_raddr <= vbank & fastio_addr(10 downto 2);
+
   rd_new <= cs and fastio_read and ((not last_rd) or b2l(fastio_addr /= last_addr));
   wr_new <= cs and fastio_write and ((not last_wr) or b2l(fastio_addr /= last_addr));
-  busy <= b2l(qcount /= 0) or prog or b2l(pendf /= x"0000") or pend_cond or pend_mint or seq_active;
+  busy <= b2l(qcount /= 0) or prog or b2l(pendf /= x"0000") or pend_cond or pend_mint or seq_active
+          or sd_a.valid or sd_b.valid or b2l(rb_we /= "0000");
 
   process (clock)
     variable cmd : cmd_t;
@@ -411,6 +598,7 @@ begin
     variable cd, cs_i, ct : natural range 0 to 15;
     variable fa_i, fb_i, fc_i : natural range 0 to 15;
     variable ra, rb, rc, rtb, rtc, rma : std_logic_vector(31 downto 0);
+    variable wv : std_logic_vector(31 downto 0);
 
     function bit_of(i : integer) return std_logic_vector is
       variable v : std_logic_vector(15 downto 0) := (others => '0');
@@ -478,11 +666,12 @@ begin
     procedure issue(cop : integer; need : std_logic_vector(15 downto 0);
                     va, vb, vc : std_logic_vector(31 downto 0); d : integer) is
       variable un : natural;
-      variable wc, wm : boolean;
+      variable wc, wm, wn : boolean;
     begin
       un := fpu_unit(to_unsigned(cop, 5));
       wc := cop = C_CORE_CMP or cop = C_CORE_CLASS;
       wm := cop >= C_CORE_TOI and cop <= C_CORE_TOI16;
+      wn := un = U_CV;                                   -- (the converter: into the result buffer)
       if (pv and need) /= x"0000" or (wc and pcd = '1') or (wm and pmt = '1')
          or (un = U_ITER and it_busy = '1') then
         stall := true;
@@ -498,7 +687,7 @@ begin
           pcd := '1';
         elsif wm then
           pmt := '1';
-        else
+        elsif not wn then
           pv(d) := '1';
         end if;
       end if;
@@ -549,6 +738,18 @@ begin
         elsif cm.op = C_PEND then
           if in_prog then
             rv := X_END;
+          end if;
+        elsif cm.op = C_VNEXT then                       -- the next vertex
+          vinidx <= vinidx + vf_size(vfmt);
+        elsif cm.op = C_VEND then                        -- the next entry
+          vtxidx <= vtxidx + 1;
+        elsif cm.op = C_VPASS then                       -- the attribute words, a sequence of copies
+          if vfmt(4 downto 3) /= "00" then
+            seq_active <= '1';
+            seq_issued <= '0';
+            upc <= 162 - to_integer(vfmt(4 downto 3));
+            seq_op <= SEQ_VPASS;
+            seq_off <= to_integer(cm.regs(2 downto 0));
           end if;
         elsif cm.op >= C_NREGOPS then
           rv := X_BAD;
@@ -605,6 +806,60 @@ begin
               upc <= ustart(W_MMUL);
               seq_op <= W_MMUL;
             end if;
+          when W_VIN =>                                  -- Vd = a vertex field: a sequence of loads
+            if t > 2 or (t = 1 and vfmt(1) = '0') or (t = 2 and vfmt(2) = '0') then
+              rv := X_BAD;
+            elsif (pv and vmask(d)) /= x"0000" then
+              stall := true;
+            else
+              seq_active <= '1';
+              seq_issued <= '0';
+              if t = 0 and vfmt(0) = '1' then
+                upc <= 143;
+              elsif t = 0 then
+                upc <= 139;
+              elsif t = 1 then
+                upc <= 147;
+              else
+                upc <= 151;
+              end if;
+              seq_op <= W_VIN;
+              seq_vd <= d mod 4;
+            end if;
+          when W_VOUT =>                                 -- Fs in format d at byte 2t: the converter
+            if d > 5 or ((d = 0 or d = 5) and t mod 2 = 1) then
+              rv := X_BAD;
+            else
+              case d is
+                when 0 | 1 => cop := CV_RAW;
+                when 2 => cop := CV_124;
+                when 3 => cop := CV_U16;
+                when 4 => cop := CV_S16;
+                when others => cop := CV_S32;
+              end case;
+              issue(cop, bit_of(s), x"00000000", ra, x"00000000", 0);
+              if not stall then
+                sd_a.valid <= '1';
+                sd_a.copy <= '0';
+                sd_a.hi <= b2l(d = 1);
+                sd_a.entry <= vtxidx;
+                sd_a.boff <= to_unsigned(2 * t, 5);
+                if d = 0 or d = 5 then sd_a.width <= 4; else sd_a.width <= 2; end if;
+              end if;
+            end if;
+          when W_VOUTC =>                                -- Vs as four bytes: a sequence of stores
+            if t mod 2 = 1 then
+              rv := X_BAD;
+            elsif (pv and vmask(s)) /= x"0000" then
+              stall := true;
+            else
+              seq_active <= '1';
+              seq_issued <= '0';
+              upc <= 155;
+              seq_op <= W_VOUTC;
+              seq_vs <= s mod 4;
+              seq_off <= t;
+            end if;
           when 0 => issue(16#01#, bit_of(d) or bit_of(s) or bit_of(t), ra, rb, rc, d);  -- FADD3
           when 1 => issue(16#02#, bit_of(d) or bit_of(s) or bit_of(t), ra, rb, rc, d);  -- FSUB3
           when 2 => issue(16#04#, bit_of(d) or bit_of(s) or bit_of(t), ra, rb, rc, d);  -- FMUL3
@@ -632,13 +887,44 @@ begin
       c_start <= '0';
       c_abort <= '0';
       pm_we <= '0';
+      va_we <= "0000";
+      rb_we <= "0000";
+      sd_b <= sd_a;
+      sd_a <= SD_NONE;
+      vd_b <= vd_a;
+      vd_a.valid <= '0';
 
       -- the commands the bus brings (one access a clock: at most one command)
       enq := false;
       cmd := CMD_ZERO;
       if wr_new = '1' then
         sa := fastio_addr(7 downto 0);
-        if fastio_addr(11 downto 8) = "0001" then          -- the control page, $1xx
+        if fastio_addr(11 downto 8) = "0000" then          -- the vertex page, $0xx (written now)
+          if sa(7 downto 2) = "000000" then                -- VINDATA, $000-$003: all one port
+            va_we(to_integer(vinptr(1 downto 0))) <= '1';
+            va_waddr <= vinptr(13 downto 2);
+            va_wdata <= std_logic_vector(fastio_wdata);
+            vinptr <= vinptr + 1;
+          elsif sa = x"04" then
+            vinptr(7 downto 0) <= fastio_wdata;
+          elsif sa = x"05" then
+            vinptr(13 downto 8) <= fastio_wdata(5 downto 0);
+          elsif sa = x"06" then                            -- (VINIDX: a word address)
+            vinidx(5 downto 0) <= fastio_wdata(7 downto 2);
+          elsif sa = x"07" then
+            vinidx(11 downto 6) <= fastio_wdata(5 downto 0);
+          elsif sa = x"08" then
+            vfmt <= fastio_wdata(4 downto 0);
+          elsif sa = x"09" then
+            vposexp <= fastio_wdata(3 downto 0);
+          elsif sa = x"0C" then
+            vtxidx(7 downto 0) <= fastio_wdata;
+          elsif sa = x"0D" then
+            vtxidx(9 downto 8) <= fastio_wdata(1 downto 0);
+          elsif sa = x"0E" then
+            vbank <= fastio_wdata(3 downto 0);
+          end if;
+        elsif fastio_addr(11 downto 8) = "0001" then       -- the control page, $1xx
           if sa >= x"80" then                              -- register forms, $180 + opcode
             cmd.op := '0' & sa(6 downto 0);
             cmd.regs := fastio_wdata;
@@ -776,6 +1062,44 @@ begin
         pv(xs) := '0';
       end if;
       xw <= '0';
+      if cv_done = '1' then
+        flv := flv or cv_flags;
+      end if;
+      -- a store or copy into the result buffer (its data now: the
+      -- converter's result, or the vertex array's word)
+      if sd_b.valid = '1' then
+        if sd_b.copy = '1' then
+          wv := va_rd(3) & va_rd(2) & va_rd(1) & va_rd(0);
+        else
+          wv := cv_r;
+        end if;
+        rb_waddr <= sd_b.entry & sd_b.boff(4 downto 2);
+        if sd_b.width = 4 then
+          rb_we <= "1111";
+          for j in 0 to 3 loop
+            rb_wd(j) <= wv(8 * j + 7 downto 8 * j);
+          end loop;
+        elsif sd_b.width = 2 then
+          if sd_b.hi = '1' then wv(15 downto 0) := wv(31 downto 16); end if;
+          if sd_b.boff(1) = '0' then
+            rb_we <= "0011";
+            rb_wd(0) <= wv(7 downto 0);
+            rb_wd(1) <= wv(15 downto 8);
+          else
+            rb_we <= "1100";
+            rb_wd(2) <= wv(7 downto 0);
+            rb_wd(3) <= wv(15 downto 8);
+          end if;
+        else
+          rb_we(to_integer(sd_b.boff(1 downto 0))) <= '1';
+          rb_wd(to_integer(sd_b.boff(1 downto 0))) <= wv(7 downto 0);
+        end if;
+      end if;
+      -- a load into T (VIN)
+      if vd_b.valid = '1' then
+        tv(vd_b.dst) := vconv(va_rd(3) & va_rd(2) & va_rd(1) & va_rd(0), vd_b.cvc, vposexp);
+        tp(vd_b.dst) := '0';
+      end if;
 
       -- the command in line (a program's, or the queue's head) or the
       -- sequence's next step, its read indices, and the reads
@@ -833,18 +1157,48 @@ begin
           else
             uc := (not rtc(31)) & rtc(30 downto 0);
           end if;
-          ready := tp(u.dst) = '0' and (u.bk /= K_T or tp(u.bi) = '0')
-                   and (u.ck = CK_NONE or tp(u.ci) = '0')
-                   and not (fpu_unit(to_unsigned(u.op, 5)) = U_ITER and it_busy = '1');
+          if u.vk = UK_VST or u.vk = UK_VCOPY then
+            ready := true;
+          else
+            ready := tp(u.dst) = '0' and (u.bk /= K_T or tp(u.bi) = '0')
+                     and (u.ck = CK_NONE or tp(u.ci) = '0')
+                     and not (fpu_unit(to_unsigned(u.op, 5)) = U_ITER and it_busy = '1');
+          end if;
           if ready then
-            c_start <= '1';
-            c_op <= to_unsigned(u.op, 5);
-            c_a <= ua;
-            c_b <= ub;
-            c_c <= uc;
-            c_rm <= mctrl_x;
-            c_tag <= to_unsigned(16 + u.dst, 8);
-            tp(u.dst) := '1';
+            if u.vk = UK_VLD then                        -- the vertex array's word, into T[dst] in two clocks
+              va_raddr <= vinidx + vf_off(vfmt, u.fld) + u.wd;
+              vd_a.valid <= '1';
+              vd_a.dst <= u.dst;
+              vd_a.cvc <= u.cvc;
+              tp(u.dst) := '1';
+            elsif u.vk = UK_VCOPY then                   -- an attribute word into the entry
+              va_raddr <= vinidx + vf_off(vfmt, 3) + u.wd;
+              sd_a.valid <= '1';
+              sd_a.copy <= '1';
+              sd_a.hi <= '0';
+              sd_a.entry <= vtxidx;
+              sd_a.boff <= to_unsigned(4 * ((seq_off + u.wd) mod 8), 5);
+              sd_a.width <= 4;
+            else
+              c_start <= '1';
+              c_op <= to_unsigned(u.op, 5);
+              c_a <= ua;
+              c_b <= ub;
+              c_c <= uc;
+              c_rm <= mctrl_x;
+              if u.vk = UK_VST then                      -- the converter's result into the entry
+                c_tag <= (others => '0');
+                sd_a.valid <= '1';
+                sd_a.copy <= '0';
+                sd_a.hi <= '0';
+                sd_a.entry <= vtxidx;
+                sd_a.boff <= to_unsigned(2 * seq_off + u.sk, 5);
+                sd_a.width <= 1;
+              else
+                c_tag <= to_unsigned(16 + u.dst, 8);
+                tp(u.dst) := '1';
+              end if;
+            end if;
             if u.last then
               seq_issued <= '1';
             else
@@ -857,7 +1211,9 @@ begin
               fv(seq_d) := treg(0);
             when W_MMUL =>
               mv := treg;
-            when others =>                               -- Vd = T0-T3
+            when W_VOUTC | SEQ_VPASS =>                  -- (stores: nothing to put in place)
+              null;
+            when others =>                               -- Vd = T0-T3 (VIN too)
               for j in 0 to 3 loop
                 fv(4 * seq_vd + j) := treg(j);
               end loop;
@@ -1023,6 +1379,17 @@ begin
         seq_active <= '0';
         seq_issued <= '0';
         xw <= '0';
+        vinptr <= (others => '0');
+        vinidx <= (others => '0');
+        vfmt <= (others => '0');
+        vposexp <= (others => '0');
+        vtxidx <= (others => '0');
+        vbank <= (others => '0');
+        sd_a <= SD_NONE;
+        sd_b <= SD_NONE;
+        vd_a.valid <= '0';
+        vd_b.valid <= '0';
+        rb_we <= "0000";
         c_start <= '0';
         c_abort <= '1';                                  -- (the core drops what is in flight)
         prog <= '0';
@@ -1040,13 +1407,28 @@ begin
   -- the byte at the address being read
   process (fastio_addr, f, flatch, mint_r, mlatch, mflags_r, mcond_r, mctrl_x, qcount,
            overrun, badop, aborted, prog, busy, mpptr, mpcnt, cntlatch, mperr, mplimit,
-           pm_rdata, plat)
+           pm_rdata, plat, rb_rd, vinptr, vinidx, vfmt, vposexp, vtxidx, vbank)
     variable v : unsigned(7 downto 0);
     variable k : integer;
     variable fv : std_logic_vector(31 downto 0);
   begin
     v := x"00";
-    if fastio_addr(11 downto 8) = "0001" then
+    if fastio_addr(11) = '1' then                           -- the window: the result buffer
+      v := unsigned(rb_rd(to_integer(fastio_addr(1 downto 0))));
+    elsif fastio_addr(11 downto 8) = "0000" then           -- the vertex page
+      case fastio_addr(7 downto 0) is
+        when x"04" => v := vinptr(7 downto 0);
+        when x"05" => v := "00" & vinptr(13 downto 8);
+        when x"06" => v := vinidx(5 downto 0) & "00";
+        when x"07" => v := "00" & vinidx(11 downto 6);
+        when x"08" => v := "000" & vfmt;
+        when x"09" => v := "0000" & vposexp;
+        when x"0C" => v := vtxidx(7 downto 0);
+        when x"0D" => v := "000000" & vtxidx(9 downto 8);
+        when x"0E" => v := "0000" & vbank;
+        when others => v := x"00";
+      end case;
+    elsif fastio_addr(11 downto 8) = "0001" then
       case fastio_addr(7 downto 0) is
         when x"00" =>
           v := b2l(mflags_r /= "00000") & '0' & aborted & prog & badop & overrun
@@ -1090,7 +1472,8 @@ begin
     rbyte <= v;
   end process;
 
-  fastio_rdata <= std_logic_vector(rbyte) when cs = '1' and fastio_read = '1' and rd_new = '1' else
+  fastio_rdata <= std_logic_vector(rbyte) when cs = '1' and fastio_read = '1'
+                                               and (rd_new = '1' or fastio_addr(11) = '1') else
                   std_logic_vector(port_latch) when cs = '1' and fastio_read = '1' else
                   (others => 'Z');
 

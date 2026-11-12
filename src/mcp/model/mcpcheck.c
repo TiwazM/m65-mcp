@@ -531,6 +531,119 @@ static void stream_checks(long n)
     }
 }
 
+/* ---- MCP-3 stage 1: the vertex path against the host ---- */
+
+/* the host's VOUT conversion (MCP3.md): v x 2^k, rounded by rm, NaN 0,
+ * saturated */
+static uint32_t host_vconv(uint32_t v, int fmt, int rm, int *fl)
+{
+    static const struct { int k; long lo, hi; } c[8] = {
+        [MCPV_S12_4] = {4, -32768, 32767}, [MCPV_U16] = {16, 0, 65535}, [MCPV_S16] = {0, -32768, 32767},
+        [MCPV_S16_16] = {16, -2147483648L, 2147483647L}, [MCPV_U8] = {8, 0, 255}
+    };
+    *fl = 0;
+    if (fmt == MCPV_F32 || fmt == MCPV_F32HI) return v;
+    return (uint32_t)host_toint(ldexp((double)fb(v), c[fmt].k), rm, c[fmt].lo, c[fmt].hi, fl);
+}
+
+/* random vertex-path commands on the model and on the host, the state
+ * compared after each: VIN, VNEXT, VOUT, VOUTC, VPASS, VEND */
+static void vertex_checks(long n)
+{
+    static mcp_state x;
+    static uint8_t vout[32768];
+    uint32_t f[16];
+    memset(&x, 0, sizeof x);
+    x.stage = 4;
+    mcp_reset(&x);
+    for (int i = 0; i < 16384; i++) x.vin[i] = (uint8_t)rnd32();
+    for (int i = 0; i < 16; i++) x.f[i] = pick();
+    for (long it = 0; it < n; it++) {
+        if (rnd32() % 64 == 0) {                             /* a new format, place, entry */
+            x.vfmt = (uint8_t)(rnd32() & 0x1F);
+            x.vposexp = (uint8_t)(rnd32() & 15);
+            x.vinidx = (uint16_t)(rnd32() & 0x3FFC);
+            x.vtxidx = (uint16_t)(rnd32() & 1023);
+            for (int i = 0; i < 64; i++) {                   /* some FP32 values worth reading */
+                uint32_t w = pick();
+                memcpy(&x.vin[(x.vinidx + 4 * (i % 8)) & 0x3FFC], &w, 4);
+            }
+        }
+        if (rnd32() % 8 == 0) x.f[rnd32() % 16] = pick();
+        memcpy(f, x.f, sizeof f);
+        memcpy(vout, x.vout, sizeof vout);
+        int fmt = x.vfmt, rm = (int)(rnd32() % 4), hfl = 0;
+        uint16_t vinidx = x.vinidx, vtxidx = x.vtxidx;
+        uint8_t mflags0 = x.mflags, sticky0 = x.sticky;
+        x.mctrl = (uint8_t)rm;
+        int k = (int)(rnd32() % 6), d = (int)(rnd32() % 16), sr = (int)(rnd32() % 16), t = (int)(rnd32() % 16);
+        int bad = 0, base = vtxidx * 32;
+        if (k == 0) {                                        /* VIN Vd, t (t 0-3) */
+            t &= 3;
+            mcp_exec_wide(&x, MCPW_VIN, d << 4 | sr, t << 4);
+            int off = mcp_vfmt_offset(fmt, t);
+            if (t == 3 || off < 0) bad = 1;
+            else {
+                int a = vinidx + off;
+                #define VB(j) x.vin[(a + (j)) & 0x3FFF]
+                uint32_t *vd = &f[4 * (d & 3)];
+                for (int c = 0; c < 4; c++) {
+                    float r;
+                    if (t == 0 && (fmt & 1)) {
+                        uint32_t w = c < 3 ? (uint32_t)VB(4 * c) | (uint32_t)VB(4 * c + 1) << 8
+                                             | (uint32_t)VB(4 * c + 2) << 16 | (uint32_t)VB(4 * c + 3) << 24
+                                           : bf(1.0f);
+                        vd[c] = w;
+                        continue;
+                    }
+                    if (t == 0) r = c < 3 ? ldexpf((float)(int16_t)(VB(2 * c) | VB(2 * c + 1) << 8), -x.vposexp) : 1.0f;
+                    else if (t == 1) r = c < 3 ? (float)(int8_t)VB(c) / 128.0f : 0.0f;
+                    else r = (float)VB(c) / 256.0f;
+                    vd[c] = bf(r);
+                }
+                #undef VB
+            }
+        } else if (k == 1) {                                 /* VNEXT */
+            mcp_exec(&x, MCP_VNEXT, 0, 0);
+            vinidx = (uint16_t)((vinidx + mcp_vfmt_size(fmt)) & 0x3FFC);
+        } else if (k == 2) {                                 /* VOUT Fs, format d, byte 2t */
+            static const int width[6] = {4, 2, 2, 2, 2, 4};
+            d %= 8;
+            mcp_exec_wide(&x, MCPW_VOUT, d << 4 | sr, t << 4);
+            if (d >= MCPV_NFMT || (width[d] == 4 && (t & 1))) bad = 1;
+            else {
+                uint32_t v = host_vconv(f[sr], d, rm, &hfl);
+                if (d == MCPV_F32HI) v = f[sr] >> 16;
+                for (int j = 0; j < width[d]; j++) vout[base + ((2 * t + j) & 31)] = (uint8_t)(v >> (8 * j));
+            }
+        } else if (k == 3) {                                 /* VOUTC Vs, byte 2t */
+            mcp_exec_wide(&x, MCPW_VOUTC, d << 4 | sr, t << 4);
+            if (t & 1) bad = 1;
+            else for (int j = 0; j < 4; j++) {
+                int fl;
+                vout[base + ((2 * t + j) & 31)] = (uint8_t)host_vconv(f[4 * (sr & 3) + j], MCPV_U8, rm, &fl);
+                hfl |= fl;
+            }
+        } else if (k == 4) {                                 /* VPASS w */
+            int w = (int)(rnd32() & 0xFF), na = (fmt >> 3) & 3, a = vinidx + mcp_vfmt_offset(fmt, 3);
+            mcp_exec(&x, MCP_VPASS, w, 0);
+            for (int j = 0; j < na; j++)
+                for (int b = 0; b < 4; b++)
+                    vout[base + 4 * ((w + j) & 7) + b] = x.vin[(a + 4 * j + b) & 0x3FFF];
+        } else {                                             /* VEND */
+            mcp_exec(&x, MCP_VEND, 0, 0);
+            vtxidx = (uint16_t)((vtxidx + 1) & 1023);
+        }
+        ntest++;
+        uint8_t wflags = (uint8_t)(mflags0 | hfl), wsticky = (uint8_t)(sticky0 | (bad ? 0x08 : 0));
+        if (memcmp(f, x.f, sizeof f) || memcmp(vout, x.vout, sizeof vout) || vinidx != x.vinidx
+            || vtxidx != x.vtxidx || wflags != x.mflags || wsticky != x.sticky)
+            fail("vertex", (uint32_t)k, (uint32_t)fmt, rm, x.mflags, wflags, x.sticky, wsticky);
+        x.mflags = 0;
+        x.sticky = 0;
+    }
+}
+
 int main(int argc, char **argv)
 {
     if (argc < 2) {
@@ -561,7 +674,10 @@ int main(int argc, char **argv)
     program_checks(200000);
     long nprog = ntest - ntf - nhost - nwide;
     stream_checks(20000);
+    long nstream = ntest - ntf - nhost - nwide - nprog;
+    vertex_checks(1000000);
     printf("mcpcheck: %ld TestFloat vectors, %ld host checks, %ld wide forms, %ld programs, "
-           "%ld streams: %ld differences\n", ntf, nhost, nwide, nprog, ntest - ntf - nhost - nwide - nprog, nfail);
+           "%ld streams, %ld vertex commands: %ld differences\n", ntf, nhost, nwide, nprog, nstream,
+           ntest - ntf - nhost - nwide - nprog - nstream, nfail);
     return nfail != 0;
 }

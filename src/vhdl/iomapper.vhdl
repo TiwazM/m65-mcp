@@ -1191,7 +1191,7 @@ begin
     end generate;
 
 
-  -- @IO:GS $FFDF100-$FFDF7FF MCP:MCP M65-MCP, the MEGA65 Mathematics Coprocessor (src/mcp/README.md), in the vFPGA's slot
+  -- @IO:GS $FFDF000-$FFDFFFF MCP:MCP M65-MCP, the MEGA65 Mathematics Coprocessor (src/mcp/README.md), in the vFPGA's slot
   mcp0: if target = mega65r6 generate
     mcp_unit: entity work.mcp
       port map (
@@ -2366,9 +2366,8 @@ begin
       else
         vfpga_cs <= '0';
       end if;
-      -- $FFDFxxx (the CPU routes the 4 KB to this slot): the M65-MCP at
-      -- $100-$7FF ($000-$0FF and $800-$FFF unused)
-      if address(19 downto 12) = x"DF" and address(11) = '0' and address(10 downto 8) /= "000" then
+      -- $FFDFxxx (the CPU routes the 4 KB to this slot): the M65-MCP, all of it
+      if address(19 downto 12) = x"DF" then
         mcp_cs <= '1';
       else
         mcp_cs <= '0';

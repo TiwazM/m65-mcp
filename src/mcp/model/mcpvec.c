@@ -17,6 +17,9 @@
 static long nvec;
 
 #define OP_FMA 0x1E                 /* the core's fused multiply-add: a x b + c */
+/* the converter's operations (MCP-3), $16-$1B: VOUT's formats */
+#define OP_CV0 0x16
+static const int cv_fmt[6] = {MCPV_F32, MCPV_S12_4, MCPV_U16, MCPV_S16, MCPV_S16_16, MCPV_U8};
 
 static void emit3(int op, int rm, uint32_t a, uint32_t b, uint32_t c)
 {
@@ -24,6 +27,10 @@ static void emit3(int op, int rm, uint32_t a, uint32_t b, uint32_t c)
     if (op == OP_FMA) {
         memset(&m, 0, sizeof m);
         m.r = mcp_fma(a, b, c, rm, &m.flags);
+        m.wr_f = 1;
+    } else if (op >= OP_CV0 && op < OP_CV0 + 6) {
+        memset(&m, 0, sizeof m);
+        m.r = mcp_vout_conv(b, cv_fmt[op - OP_CV0], rm, &m.flags);
         m.wr_f = 1;
     } else {
         m = mcp_core(op, a, b, rm);
@@ -117,8 +124,8 @@ int main(int argc, char **argv)
         MCP_FMOVE, MCP_FADD, MCP_FSUB, MCP_FSUBR, MCP_FMUL, MCP_FDIV, MCP_FDIVR, MCP_FCMP,
         MCP_FMIN, MCP_FMAX, MCP_FSQRT, MCP_FABS, MCP_FNEG, MCP_FRINT, MCP_FTRUNC, MCP_FCLASS,
         MCP_FTOI, MCP_FTOX, MCP_FTOI16, MCP_FRECIP, MCP_FCONST, MCP_ILD, MCP_XLD,
-        MCP_FXCHG, MCP_SETCTRL, 0x1F,                    /* (not core operations: nothing written) */
-        OP_FMA
+        MCP_FXCHG, 0x1F,                                 /* (not core operations: nothing written) */
+        OP_FMA, OP_CV0, OP_CV0 + 1, OP_CV0 + 2, OP_CV0 + 3, OP_CV0 + 4, OP_CV0 + 5
     };
     /* (mixed: the core's units get them interleaved, as a program would) */
     const long nops = (long)(sizeof ops / sizeof ops[0]);
@@ -128,6 +135,11 @@ int main(int argc, char **argv)
         if (o == MCP_ILD || o == MCP_XLD)
             b = rnd32() % 3 ? rnd32() : (rnd32() % 0x1000000) << (rnd32() % 9);
         if (o == MCP_FCONST) b = rnd32() % 16;
+        if (o > OP_CV0 && o < OP_CV0 + 6 && rnd32() % 3 == 0) {   /* (near the format's bounds) */
+            static const float lim[6] = {0, 32767.5f / 16, 65535.5f / 65536, 32767.5f, 32768.0f, 255.5f / 256};
+            b = bf(lim[o - OP_CV0]) + (rnd32() % 9) - 4;
+            if (rnd32() % 2) b ^= 0x80000000u;
+        }
         emit3(o, (int)(rnd32() % 4), a, b, o == OP_FMA ? pick() : 0);
     }
     fprintf(stderr, "mcpvec: %ld TestFloat vectors, %ld random\n", ntf, nvec - ntf);

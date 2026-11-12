@@ -63,6 +63,16 @@ begin
       end if;
     end procedure;
 
+    -- (a read is held at least two clocks: the CPU's fastio wait state, which
+    -- the result buffer's window relies on)
+    procedure next_read_hold(h : out integer) is
+      variable x : integer;
+    begin
+      next_hold(x);
+      if x < 2 then x := 2; end if;
+      h := x;
+    end procedure;
+
     procedure bus_write(a : integer; d : unsigned(7 downto 0)) is
       variable h : integer;
     begin
@@ -83,7 +93,7 @@ begin
       addr <= to_unsigned(a, 12);
       cs <= '1';
       rd <= '1';
-      next_hold(h);
+      next_read_hold(h);
       tick(h);
       d := unsigned(rdata);
       cs <= '0';

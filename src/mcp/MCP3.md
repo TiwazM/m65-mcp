@@ -2,7 +2,8 @@
 
 Spec, 2026-11-12. Decisions 1-6 taken as recommended (Steve, 2026-11-12).
 Stage 0 (making room) built and checked in simulation and on a MEGA65 R6
-the same day ("Stage 0" below); nothing of MCP-3 itself built yet.
+the same day; stage 1 (the plumbing) built and checked in simulation
+("Stage 0", "Stage 1" below).
 
 MCP-3 does what m65tr3d's fixed-point vertex unit did (removed after MCP-2,
 MCP.md decision 4), on FP32:
@@ -111,29 +112,35 @@ more.
 ### Registers (new; `$FFDF000` + offset)
 
 The MCP takes the whole slot: its decode grows from `$100-$7FF` to
-`$000-$FFF`.
+`$000-$FFF`. MVER reads `$03`. The registers below are written at once (not
+queued): write them while the unit is idle. MRESET sets them to 0 and keeps
+the vertex array's and the result buffer's contents. It drops what is
+queued or in flight, stores included, so software that wants a store's
+bytes waits for the unit to go idle (MSTATUS bit 0) before an MRESET.
 
 | Offset | Name | |
 |---|---|---|
-| `$000-$003` | VINDATA | write: bytes into the vertex array at VINPTR, which advances (all four addresses one port, as MSTREAM: DMA with the address held, or STQ) |
-| `$004-$005` | VINPTR | the vertex array's write address (14 bits) |
-| `$006-$007` | VINIDX | the vertex array's read address: VIN reads the vertex there, VNEXT moves it on by one vertex |
-| `$008` | VFMT | the vertex format (below) |
+| `$000-$003` | VINDATA | write: a byte into the vertex array at VINPTR, which advances (all four addresses one port, as MSTREAM: DMA with the address held, or STQ) |
+| `$004-$005` | VINPTR | the vertex array's write address (14 bits: 16 KB) |
+| `$006-$007` | VINIDX | the vertex VIN reads: a byte address, bits 1-0 always 0 (vertices are whole words); VNEXT moves it on by one vertex |
+| `$008` | VFMT | the vertex format (5 bits, below) |
 | `$009` | VPOSEXP | s16 positions are scaled by 2^-n (n 0-15), as the vertex unit's fraction bits |
-| `$00C-$00D` | VTXIDX | the entry VEND completes (10 bits); it advances and wraps from 1023 to 0 |
+| `$00C-$00D` | VTXIDX | the entry the stores go to (10 bits); VEND moves it on, wrapping from 1023 to 0 |
 | `$00E` | VBANK | which 2 KB of the result buffer (64 entries, 0-15) the window shows |
-| `$800-$FFF` | VOUTWIN | read: the result buffer, bank VBANK, direct-mapped (reads have no side effects, so a DMA copy needs no care at its ends) |
+| `$800-$FFF` | VOUTWIN | read: the result buffer, bank VBANK, direct-mapped. Reads have no side effects, so a DMA copy needs no care at its ends. (A read takes the CPU's fastio wait state: the buffer is block RAM.) |
 
 ### The vertex format (VFMT)
 
+Every field is whole 32-bit words, and every conversion exact:
+
 | Bits | Field | |
 |---|---|---|
-| 0 | position | 0: s16 x, y, z (6 bytes) scaled by VPOSEXP; 1: FP32 x, y, z (12 bytes) |
-| 1 | normal | s8 nx, ny, nz and a pad byte, 127 = 1 (4 bytes) |
-| 2 | colour | r, g, b, a, 0-255 (4 bytes) |
-| 3-4 | attributes | 0, 4 or 8 bytes passed to the entry unchanged (texture coordinates, or anything) |
+| 0 | position | 0: s16 x, y, z and a pad (8 bytes), each x 2^-VPOSEXP; 1: FP32 x, y, z (12 bytes), as they are |
+| 1 | normal | s8 nx, ny, nz and a pad byte (4 bytes), each x 2^-7: 127 is 0.992 (a program that cares normalises) |
+| 2 | colour | u8 r, g, b, a (4 bytes), each x 2^-8 |
+| 3-4 | attributes | 0-3 words passed to the entry unchanged (texture coordinates, or anything) |
 
-The fields come in that order; a vertex is 6 to 32 bytes.
+The fields come in that order; a vertex is 8 to 40 bytes.
 
 ### The result entry (32 bytes)
 
@@ -145,7 +152,7 @@ The vertex unit's layout where it fits, so software for it carries over:
 | 4-5 | depth: u16 |
 | 6-7 | 1/w: u16, scaled |
 | 8-11 | r, g, b, a |
-| 12-19 | the attributes as they came in |
+| 12-19 | the attributes as they came in (VPASS from word 3) |
 | 20-23, 24-27 | clip-space x, y: FP32 (for software clipping) |
 | 28-29 | clip-space w: FP32's top half (a sign, an exponent and 7 bits are enough for the near test and sorting) |
 | 30 | flags: the six clip codes, guard band |
@@ -158,17 +165,30 @@ program's, not the hardware's.
 
 | Form | Name | Operation |
 |---|---|---|
-| wide `$25` | VIN | Vd = a field of the vertex at VINIDX, converted to FP32: t = 0 position (x, y, z, 1), 1 normal (nx, ny, nz, 0), 2 colour (r, g, b, a in 0-1) |
+| wide `$25` | VIN | Vd = a field of the vertex at VINIDX, converted to FP32: t = 0 position (x, y, z, 1), 1 normal (nx, ny, nz, 0), 2 colour (r, g, b, a). A field VFMT lacks, or t > 2: reserved |
 | reg `$1A` | VNEXT | VINIDX moves on by one vertex (VFMT's size) |
-| wide `$26` | VOUT | Fs into the entry at VTXIDX, at byte t x 2, in format d: FP32, FP32's top half, s16 12.4, u16 (0-1 to 0-65535), s32 |
-| wide `$27` | VOUTC | Vs's four components as bytes (0-1 to 0-255, rounded, clamped) into the entry at byte t x 2 |
-| reg `$1B` | VPASS | the vertex's attributes into the entry at byte 12 |
-| reg `$1C` | VCLIP | Vs's clip codes and guard-band flag into MCOND and into the entry's flags byte |
-| reg `$1D` | PSKIP | in a program: if MCOND and the mask in d is not 0, skip the next s commands (0-15) |
+| wide `$26` | VOUT | Fs into the entry at VTXIDX, at byte 2t, in format d (below) |
+| wide `$27` | VOUTC | Vs's four components as bytes (each x 2^8, rounded, clamped to 0-255) into the entry at byte 2t (t even) |
+| reg `$1B` | VPASS | the vertex's attribute words into the entry, from its word n (the data byte, 0-7; the entry's words wrap) |
+| reg `$1C` | VCLIP | (stage 2) Vs's clip codes and guard-band flag into MCOND and into the entry's flags byte |
+| reg `$1D` | PSKIP | (stage 2) in a program: if MCOND and the mask in d is not 0, skip the next s commands (0-15) |
 | reg `$1E` | VEND | the entry done; VTXIDX advances |
 
-VOUT's conversions round to nearest-even and saturate, as FTOI does (an
-invalid flag for a NaN, 0 written).
+VOUT's formats (d), each written little-endian:
+
+| d | | Bytes | |
+|---|---|---|---|
+| 0 | FP32 | 4 (t even) | as it is |
+| 1 | FP32's top half | 2 | bits 31-16 as they are (a sign, an exponent and 7 bits) |
+| 2 | s16 12.4 | 2 | x 2^4 |
+| 3 | u16 | 2 | x 2^16, 0-65535 (0-1 to 0-65535) |
+| 4 | s16 | 2 | as an integer |
+| 5 | s32 16.16 | 4 (t even) | x 2^16 |
+| 6-15 | | | reserved |
+
+The conversions to integers work as FTOI: rounded by MCTRL's mode, NaN
+gives 0, out of range gives the nearest bound, and either sets the invalid
+flag (alone); otherwise a rounding sets the inexact flag.
 
 ### The standard program
 
@@ -189,7 +209,7 @@ VOUT   F5, s12.4, 2
 ...
 VIN    V2, colour          ; (lit: VIN V3, normal; VDOT3 with the light; FMAX 0;
 VOUTC  V2, 8               ;  an FMA with ambient and diffuse; VMUL)
-VPASS
+VPASS  3                   ; the attributes, from word 3 (byte 12)
 VEND
 VNEXT
 PEND
@@ -294,6 +314,60 @@ commands' clocks.
 - **The board:** a stage-3 script (seed 3), 10,516 reads identical; the
   Mandelbrot exact (61.9 ms MCP-1, 10.3 ms MCP-2); the command clocks
   above.
+
+## Stage 1 (2026-11-12)
+
+The plumbing: the vertex array, the result buffer, their registers and
+window, and VIN, VNEXT, VOUT, VOUTC, VPASS, VEND (formats and commands as
+above). MVER reads `$03`.
+
+- **The model** (`mcp_model.c`, stage 4): the vertex array (16 KB) and the
+  result buffer (32 KB), the registers, the commands; a conversion as
+  FTOX's (the value x 2^k exactly, in double, then rounded and clamped).
+  `mcpcheck` runs 1,000,000 random vertex commands against a separate
+  host version, 0 differences; 3 planted bugs, all caught.
+- **The core** (`mcp_fpu.vhdl`): a fourth unit, the converter, for VOUT's
+  and VOUTC's formats. The iterative unit's conversion logic in two stages:
+  b x 2^k as 32.32 fixed point through one shifter, then the rounding and
+  the saturation. An operation a clock, the result in the clock after
+  start. Its six operations take the core's free opcodes `$16-$1B`.
+- **The front end** (`mcp.vhdl`):
+  - the vertex array: four byte lanes of 4 KB in block RAM, written a byte
+    at a time through VINDATA, read a word at a time
+  - the result buffer: four byte lanes of 8 KB, written by stores and
+    copies, read through the window. Its read address follows the bus's;
+    the CPU's fastio wait state covers the block RAM's clock, as for the
+    SD card's sector buffer.
+  - **VIN** is a sequence of loads (a new micro-operation: a vertex word,
+    converted, into a temporary), then Vd = T0-T3 as any vector result.
+  - **VOUTC** is a sequence of four stores through the converter, VPASS a
+    sequence of up to three copies (vertex array to result buffer).
+  - **VOUT** goes to the converter as any core operation.
+  - Stores and copies all take two clocks from issue to their data, so
+    one a clock never collide. VNEXT and VEND act at once.
+- **The checks:**
+  - the core: 26,345,680 vectors identical (the converter's: the
+    random part, near each format's bounds too)
+  - the front end: `mcpgen` stage 4 (the default now: uploads, the
+    registers, the commands by every path, the window read back at each
+    checkpoint), 24 seeds at both bus rates, 2,387,162 reads identical
+  - 14 planted bugs: 13 caught. The fourteenth (MSTATUS not busy for a
+    store's last clocks) can't be seen from the bus: a store reaches the
+    buffer within 3 clocks, and reading MSTATUS and then the window takes
+    longer.
+  - The bench now holds every read at least two clocks, as the CPU's wait
+    state does: the window needs it.
+  - The first runs failed: `mcpgen` sent MRESET with stores still queued.
+    The model ran them as they were written, while MRESET drops them, and
+    the result buffer is the first state that outlives an MRESET. At stage
+    4 the script now waits for the unit before an MRESET. The spec says
+    so (above).
+- **The build:** WNS +0.224 ns, the worst paths in the HyperRAM controller,
+  none through the MCP. The MCP is 11,974 LUTs (939 more than stage 0:
+  the converter and the vertex path), 4,313 flip-flops, 13 RAMB36 (12 new:
+  the vertex array and the result buffer) and 2 DSPs; the chip 65.3% of its
+  LUTs, 42% of its block RAM.
+- **The board:** not yet (the board is busy).
 
 ## Open points
 

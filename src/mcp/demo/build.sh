@@ -2,7 +2,7 @@
 # Builds the M65-MCP's board test: an mcpgen script (the bench's kind) as
 # records for mcptest.prg, and the values its reads must return.
 #   src/mcp/demo/build.sh [outdir] [seed] [commands]      defaults: out, 1, 3000
-# MCP_STAGE=n: the model's stage (mcp_model.h; default 3), as the bench's.
+# MCP_STAGE=n: the model's stage (mcp_model.h; default 4), as the bench's.
 # Needs src/mcp/sim/fetch.sh run once (the model is built on SoftFloat).
 set -e
 here=${0:A:h}
@@ -14,7 +14,7 @@ build=Linux-ARM-VFPv2-GCC
 mkdir -p $out
 cc -std=gnu99 -O2 -Wall -I$sf/source/include -I$src/mcp/model -o $out/mcpgen \
    $src/mcp/model/mcpgen.c $src/mcp/model/mcp_model.c $sf/build/$build/softfloat.a
-$out/mcpgen ${2:-1} ${3:-3000} ${MCP_STAGE:-3} > $out/script.txt
+$out/mcpgen ${2:-1} ${3:-3000} ${MCP_STAGE:-4} > $out/script.txt
 # records: type (1 W, 2 R, 3 I), offset low, high, value; the overrun test
 # (O, the bench's: 40 divides at the DMA's rate) is left out
 python3 -I - $out <<'PY'

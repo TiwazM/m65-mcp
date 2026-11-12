@@ -36,6 +36,10 @@ architecture sim of tb_mcp_fpu is
   signal sh_cond : std_logic_vector(7 downto 0);
   signal fm_flags, sh_flags, it_flags : std_logic_vector(4 downto 0);
   signal sh_wf, sh_wc, it_wf, it_wm : std_logic;
+  signal cv_done : std_logic;
+  signal cv_tag : unsigned(7 downto 0);
+  signal cv_r : std_logic_vector(31 downto 0);
+  signal cv_flags : std_logic_vector(4 downto 0);
   signal finished : boolean := false;
 begin
 
@@ -48,7 +52,8 @@ begin
               sh_done => sh_done, sh_tag => sh_tag, sh_r => sh_r, sh_cond => sh_cond,
               sh_flags => sh_flags, sh_wf => sh_wf, sh_wc => sh_wc,
               it_done => it_done, it_tag => it_tag, it_r => it_r, it_mint => it_mint,
-              it_flags => it_flags, it_wf => it_wf, it_wm => it_wm);
+              it_flags => it_flags, it_wf => it_wf, it_wm => it_wm,
+              cv_done => cv_done, cv_tag => cv_tag, cv_r => cv_r, cv_flags => cv_flags);
 
   process
     file f : text;
@@ -73,7 +78,7 @@ begin
     variable e_op, e_cond, e_fl : tags_8;
     variable e_rm, e_wr : tags_4;
     variable e_a, e_b, e_c, e_r, e_mint : tags_32;
-    type lat_t is array (0 to 2) of integer;
+    type lat_t is array (0 to 3) of integer;
     variable lat_min : lat_t := (others => 1000);
     variable lat_max : lat_t := (others => 0);
     variable l : line;
@@ -176,16 +181,20 @@ begin
         result(U_ITER, it_tag, it_r, it_mint, x"00", it_flags, it_wf, it_wm, '0');
         iter_out := false;
       end if;
+      if cv_done = '1' then
+        result(U_CV, cv_tag, cv_r, x"00000000", x"00", cv_flags, '1', '0', '0');
+      end if;
       clk := clk + 1;
       assert outstanding = 0 or clk - last < 1000
         report "no result for 1000 clocks, " & integer'image(outstanding) & " operations in flight"
         severity failure;
     end loop;
     file_close(f);
-    for k in 0 to 2 loop
+    for k in 0 to 3 loop
       if lat_min(k) <= lat_max(k) then
         if k = U_FMA then write(l, string'("multiply-add pipeline"));
         elsif k = U_SHORT then write(l, string'("short unit"));
+        elsif k = U_CV then write(l, string'("converter"));
         else write(l, string'("iterative unit")); end if;
         write(l, string'(": "));
         write(l, lat_min(k));

@@ -21,7 +21,10 @@
  *        MPLIMIT, MPERR, MSTATUS bit 5; the stream's $90 prefix (4 bytes)
  *        known, the wide forms still reserved
  *   2  + the wide forms FADD3, FSUB3, FMUL3, FMA, FMS
- *   3  + vectors and matrices (all of MCP-2) */
+ *   3  + vectors and matrices (all of MCP-2)
+ *   4  + MCP-3 stage 1 (src/mcp/MCP3.md): the vertex array, the result buffer
+ *        and their registers ($000-$0FF, the window $800-$FFF), VIN, VNEXT,
+ *        VOUT, VOUTC, VPASS, VEND; MVER $03 */
 #ifndef MCP_MODEL_H
 #define MCP_MODEL_H
 
@@ -35,7 +38,10 @@ enum {
     MCP_FXCHG, MCP_FCONST, MCP_SETCTRL, MCP_SETFLAGS,
     MCP_NREGOPS,                            /* MCP-1: $18-$7F reserved */
     MCP_PEXIT = 0x18, MCP_PEND = 0x19,      /* MCP-2 */
-    MCP_NREGOPS2                            /* MCP-2: $1A-$7F reserved */
+    MCP_NREGOPS2,                           /* MCP-2: $1A-$7F reserved */
+    MCP_VNEXT = 0x1A, MCP_VPASS = 0x1B,     /* MCP-3 */
+    MCP_VCLIP = 0x1C, MCP_PSKIP = 0x1D,     /* (MCP-3 stage 2) */
+    MCP_VEND = 0x1E
 };
 /* core-only operations: the memory forms FILD and FXLD */
 #define MCP_ILD 0x1C
@@ -48,8 +54,14 @@ enum {
     MCPW_FADD3 = 0x00, MCPW_FSUB3 = 0x01, MCPW_FMUL3 = 0x02, MCPW_FMA = 0x03, MCPW_FMS = 0x04,
     MCPW_VMOVE = 0x10, MCPW_VADD, MCPW_VSUB, MCPW_VMUL, MCPW_VSCALE, MCPW_VDOT3, MCPW_VDOT4,
     MCPW_VCROSS, MCPW_VNORM3,
-    MCPW_MLOAD = 0x20, MCPW_MSTORE, MCPW_MXV, MCPW_MTXV, MCPW_MMUL
+    MCPW_MLOAD = 0x20, MCPW_MSTORE, MCPW_MXV, MCPW_MTXV, MCPW_MMUL,
+    MCPW_VIN = 0x25, MCPW_VOUT, MCPW_VOUTC                  /* MCP-3 */
 };
+
+/* VOUT's formats (MCP3.md): FP32, its top half, s16 x 16 (12.4), u16 x 2^16,
+ * s16, s32 x 2^16 (16.16); VOUTC's: u8 x 2^8 */
+enum { MCPV_F32, MCPV_F32HI, MCPV_S12_4, MCPV_U16, MCPV_S16, MCPV_S16_16, MCPV_NFMT };
+#define MCPV_U8 7
 
 /* MFLAGS bits (MCP1.md) */
 #define MCP_FL_INVALID   0x01
@@ -112,6 +124,14 @@ typedef struct {
     uint32_t mplimit;               /* 24 bits; 0: no limit */
     uint8_t  lbuf[6];               /* MPLOAD: the command being collected */
     int      ln;
+    /* the vertex path (stage 4 on) */
+    uint8_t  vin[16384];            /* the vertex array (MRESET keeps it) */
+    uint8_t  vout[32768];           /* the result buffer: 1,024 entries of 32 bytes (kept too) */
+    uint16_t vinptr;                /* VINPTR: VINDATA's byte address, 14 bits */
+    uint16_t vinidx;                /* VINIDX: the vertex VIN reads, a byte address, bits 1-0 0 */
+    uint8_t  vfmt, vposexp;         /* VFMT (5 bits), VPOSEXP (4 bits) */
+    uint16_t vtxidx;                /* VTXIDX: the entry the stores go to, 10 bits */
+    uint8_t  vbank;                 /* VBANK: the window's 2 KB, 4 bits */
 } mcp_state;
 /* everything back to its start (MRESET), but the stage and the program
  * memory's contents kept (MPPTR 0, MPLOAD restarted) */
@@ -132,5 +152,20 @@ void mcp_mpload_restart(mcp_state *s);
 void mcp_mpread(const mcp_state *s, uint8_t out[8]);
 /* MSTATUS once idle: bit 7 any flag, bits 2, 3, 5 sticky */
 uint8_t mcp_status(const mcp_state *s);
+
+/* the vertex path (stage 4): a byte written to VINDATA ($000-$003), the
+ * other registers at $004-$00E written and read, a byte of the window
+ * ($800-$FFF; off = the address - $800) */
+void mcp_vin_write(mcp_state *s, uint8_t byte);
+void mcp_vreg_write(mcp_state *s, int off, uint8_t v);
+uint8_t mcp_vreg_read(const mcp_state *s, int off);
+uint8_t mcp_window_read(const mcp_state *s, int off);
+/* a vertex format's size in bytes, a field's offset in it (0 position, 1
+ * normal, 2 colour, 3 attributes; -1 if the format has none) */
+int mcp_vfmt_size(int fmt);
+int mcp_vfmt_offset(int fmt, int field);
+/* VOUT's and VOUTC's conversion: v as format fmt (MCPV_*), rounded by rm;
+ * the bits written (sign- or zero-extended to 32), flags as MFLAGS bits */
+uint32_t mcp_vout_conv(uint32_t v, int fmt, int rm, uint8_t *flags);
 
 #endif

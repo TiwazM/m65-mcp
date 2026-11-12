@@ -5,8 +5,11 @@
  *
  * stage (mcp_model.h): 0 MCP-1, 1 MCP-2's programs, 2 + the wide forms
  * FADD3-FMS (also through their window, $200 + op * 2), 3 + the vector and
- * matrix forms VMOVE-VNORM3, MLOAD-MMUL (the default; half the wide forms
- * at stage 3, by every path, programs too). Stage
+ * matrix forms VMOVE-VNORM3, MLOAD-MMUL (half the wide forms at stage 3,
+ * by every path, programs too), 4 + MCP-3 stage 1 (the default): vertex
+ * uploads through VINDATA, the vertex registers, VIN, VOUT, VOUTC, VNEXT,
+ * VPASS, VEND by every path, the result buffer read through its window.
+ * Stage
  * 1 adds programs: loaded through MPLOAD (now and then cut off by
  * MPLOADRST), read back through MPREAD, run by PRUN (the memory-form window
  * or the stream) with random counts and MPLIMIT values; the checkpoints read
@@ -58,7 +61,7 @@ static uint32_t pick(void)
 }
 
 static mcp_state m;
-static int stage = 3;
+static int stage = 4;
 
 /* (stage 3) a vector or matrix form */
 static int vector_op(void)
@@ -68,6 +71,24 @@ static int vector_op(void)
         MCPW_VCROSS, MCPW_VNORM3, MCPW_MLOAD, MCPW_MSTORE, MCPW_MXV, MCPW_MTXV, MCPW_MMUL
     };
     return ops[R(sizeof ops / sizeof ops[0])];
+}
+
+/* (stage 4) a vertex wide form and arguments that mostly make sense: VIN's
+ * field 0-2, VOUT's format 0-5, VOUTC's and the 4-byte formats' even offset */
+static int vertex_wide(int *regs, int *r2)
+{
+    int op = MCPW_VIN + (int)R(3);
+    if (op == MCPW_VIN && R(6)) *r2 = (int)(R(3) << 4);
+    if (op == MCPW_VOUT && R(6)) *regs = (int)(R(6) << 4 | (*regs & 15));
+    if (op != MCPW_VIN && R(4)) *r2 &= 0xE0;
+    return op;
+}
+
+/* (stage 4) a vertex register form */
+static int vertex_reg(void)
+{
+    static const int ops[] = {MCP_VNEXT, MCP_VPASS, MCP_VEND, MCP_VEND};
+    return ops[R(4)];
 }
 static uint8_t mbuf[3];                     /* the memory forms' held bytes 0-2 */
 static uint8_t wbuf;                        /* the wide forms' held first byte */
@@ -116,11 +137,17 @@ static int cmd_bytes(uint8_t *b, int for_prog)
         b[0] = 0x90; b[1] = (uint8_t)vector_op(); b[2] = (uint8_t)regs; b[3] = (uint8_t)(R(16) << 4);
         return 4;
     }
+    if (stage >= 4 && R(6) == 0) {                         /* (stage 4: the vertex path, by every path) */
+        int r2 = (int)(R(16) << 4);
+        b[0] = 0x90; b[1] = (uint8_t)vertex_wide(&regs, &r2); b[2] = (uint8_t)regs; b[3] = (uint8_t)r2;
+        return 4;
+    }
     if (for_prog && r < 12) { b[0] = MCP_PEXIT; b[1] = (uint8_t)(1 << R(4)); return 2; }
     if (for_prog && r < 22) { b[0] = MCP_PEND; b[1] = (uint8_t)regs; return 2; }
     if (r < 60) {
         int op = R(15) ? (int)R(MCP_NREGOPS) : (int)R(0x80);
         if (for_prog && op >= MCP_NREGOPS2 && R(10)) op = MCP_FADD;
+        if (stage >= 4 && R(4) == 0) op = vertex_reg();
         if (op == MCP_SETCTRL) regs &= 3;
         b[0] = (uint8_t)op;
         b[1] = (uint8_t)regs;
@@ -161,7 +188,7 @@ static void checkpoint(void)
     Rd(0x100, mcp_status(&m));
     Rd(0x103, 0);
     Rd(0x101, 0x4D);
-    Rd(0x102, stage >= 1 ? 0x02 : 0x01);
+    Rd(0x102, stage >= 4 ? 0x03 : stage >= 1 ? 0x02 : 0x01);
     if (stage >= 1) {
         Rd(0x10C, m.mpptr & 255);
         Rd(0x10D, m.mpptr >> 8);
@@ -169,6 +196,14 @@ static void checkpoint(void)
         Rd(0x10F, m.mpcnt >> 8);
         Rd(0x110, m.mperr);
         for (int k = 0; k < 3; k++) Rd(0x114 + k, (int)(m.mplimit >> (8 * k)));
+    }
+    if (stage >= 4) {                                     /* the vertex registers, the current entry */
+        static const int regs[] = {0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0C, 0x0D, 0x0E};
+        for (int k = 0; k < 9; k++) Rd(regs[k], mcp_vreg_read(&m, regs[k]));
+        int e = m.vtxidx & 1023;
+        W(0x00E, e >> 6);
+        mcp_vreg_write(&m, 0x0E, (uint8_t)(e >> 6));
+        for (int k = 0; k < 32; k++) Rd(0x800 + (e & 63) * 32 + k, mcp_window_read(&m, (e & 63) * 32 + k));
     }
 }
 
@@ -228,11 +263,12 @@ int main(int argc, char **argv)
     mcp_reset(&m);
     checkpoint();
     for (long c = 0; c < ncmd; c++) {
-        int k = (int)R(stage >= 2 ? 120 : stage >= 1 ? 112 : 100);
+        int k = (int)R(stage >= 4 ? 132 : stage >= 2 ? 120 : stage >= 1 ? 112 : 100);
         int op, regs = (int)R(256);
         uint32_t v = pick();
         if (k < 38) {                                     /* a register form */
             op = R(12) ? (int)R(MCP_NREGOPS) : (int)R(0x80);
+            if (stage >= 4 && R(5) == 0) op = vertex_reg();
             before_cmd();
             W(0x180 + op, regs);
             mcp_exec(&m, op, regs, 0);
@@ -280,7 +316,8 @@ int main(int argc, char **argv)
             mcp_stream_restart(&m);
             sqn = 0;
         } else if (k < 99) {                              /* MRESET */
-            W(0x107, regs);
+            if (stage >= 4) I();                          /* (the result buffer outlives it: what is */
+            W(0x107, regs);                               /*  queued or in flight, it drops) */
             mcp_reset(&m);
             sqn = 0;
             since_wait = 0;
@@ -317,6 +354,7 @@ int main(int argc, char **argv)
         } else if (k < 120) {                             /* (stage 2) a wide form through its window */
             int wop = stage >= 3 && R(2) ? vector_op() : R(4) ? (int)R(5) : R(2) ? 5 + (int)R(4) : (int)R(0x80);
             int r2 = (int)(R(16) << 4);
+            if (stage >= 4 && R(3) == 0) wop = vertex_wide(&regs, &r2);
             int a = 0x200 + wop * 2;
             if (R(10)) {
                 wbuf = (uint8_t)regs;
@@ -338,6 +376,32 @@ int main(int argc, char **argv)
                 W(0x100, 0);
                 m.sticky = 0;
             }
+        } else if (k < 126) {                             /* (stage 4) vertex data through VINDATA */
+            I();
+            int at = (int)R(16384), n = 1 + (int)R(64);
+            W(0x004, at & 255);
+            W(0x005, at >> 8);
+            mcp_vreg_write(&m, 0x04, (uint8_t)at);
+            mcp_vreg_write(&m, 0x05, (uint8_t)(at >> 8));
+            for (int i = 0; i < n; i += 4) {
+                uint32_t w = R(3) ? pick() : rnd32();
+                for (int j = 0; j < 4 && i + j < n; j++) {
+                    W((int)R(4), (int)(w >> (8 * j)));
+                    mcp_vin_write(&m, (uint8_t)(w >> (8 * j)));
+                }
+            }
+        } else if (k < 129) {                             /* (stage 4) a vertex register */
+            static const int regs4[] = {0x06, 0x07, 0x08, 0x08, 0x09, 0x0C, 0x0D, 0x0E, 0x05};
+            int a = regs4[R(9)];
+            I();
+            W(a, regs);
+            mcp_vreg_write(&m, a, (uint8_t)regs);
+        } else {                                          /* (stage 4) the result buffer, some of it */
+            I();
+            int bank = (int)R(16), at = (int)R(2048), n = 1 + (int)R(32);
+            W(0x00E, bank);
+            mcp_vreg_write(&m, 0x0E, (uint8_t)bank);
+            for (int i = 0; i < n; i++) Rd(0x800 + ((at + i) & 2047), mcp_window_read(&m, at + i));
         }
         /* the stream's bytes, a few at a time, between the other paths' */
         for (int b = (int)R(7); b > 0 && sqn; b--) stream_byte();
