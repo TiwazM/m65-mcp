@@ -26,6 +26,8 @@
 -- result buffer (4 x 8 KB, read through the window at $800-$FFF); VIN as a
 -- sequence of loads into T0-T3, VOUT through the core's converter, VOUTC
 -- and VPASS as sequences of stores and copies, VNEXT and VEND at once.
+-- Stage 2: VCLIP (the clip codes into MCOND and the entry's byte 30) and
+-- PSKIP (in a program, a skip forward on MCOND).
 
 library ieee;
 use ieee.std_logic_1164.all;
@@ -61,6 +63,7 @@ architecture rtl of mcp is
   constant C_VNEXT    : integer := 16#1A#;     -- MCP-3
   constant C_VPASS    : integer := 16#1B#;
   constant C_VEND     : integer := 16#1E#;
+  constant C_VCLIP    : integer := 16#1C#;
   constant C_CORE_FMA : integer := 16#1E#;     -- the core's a x b + c
 
   -- what a command did (dispatch)
@@ -69,6 +72,7 @@ architecture rtl of mcp is
   constant X_END  : integer := 2;               -- PEND (in a program)
   constant X_BAD  : integer := 3;               -- a reserved command
   constant X_WAIT : integer := 4;               -- not yet: a result it needs is still to come
+  constant X_SKIP : integer := 5;               -- PSKIP taken (in a program): skip the next skipn
 
   -- the core's operations the scoreboard needs to know
   constant C_CORE_CMP   : integer := 16#07#;
@@ -98,6 +102,7 @@ architecture rtl of mcp is
   constant W_VIN    : integer := 16#25#;
   constant W_VOUT   : integer := 16#26#;
   constant W_VOUTC  : integer := 16#27#;
+  constant W_PSKIP  : integer := 16#28#;
   constant SEQ_VPASS : integer := 16#41#;       -- (VPASS's sequence: not a wide form)
 
   -- the core's converter (MCP-3): b as it is, 12.4, u16 x 2^16, s16, 16.16, u8 x 2^8
@@ -349,6 +354,9 @@ architecture rtl of mcp is
   end function;
 
   -- the fastio side
+  constant Z31V : std_logic_vector(30 downto 0) := (others => '0');
+  constant Z23V : std_logic_vector(22 downto 0) := (others => '0');
+
   -- the vertex format (MCP3.md, in words): the position's 2 (s16) or 3
   -- (FP32), a field's offset (0 position, 1 normal, 2 colour, 3 the
   -- attributes), the vertex's size
@@ -416,6 +424,44 @@ architecture rtl of mcp is
     end case;
   end function;
 
+  -- a < b for two FP32 values, neither a NaN (+0 = -0)
+  function flt_lt(a, b : std_logic_vector(31 downto 0)) return boolean is
+  begin
+    if a(30 downto 0) = Z31V and b(30 downto 0) = Z31V then
+      return false;
+    elsif a(31) /= b(31) then
+      return a(31) = '1';
+    elsif a(31) = '0' then
+      return unsigned(a(30 downto 0)) < unsigned(b(30 downto 0));
+    else
+      return unsigned(a(30 downto 0)) > unsigned(b(30 downto 0));
+    end if;
+  end function;
+
+  -- VCLIP's codes for (x, y, z, w) (MCP3.md): x < -w, x > w, y < -w, y > w,
+  -- z < 0, z > w, w <= 0; a NaN anywhere: bit 7 alone
+  function clip_codes(x, y, z, w : std_logic_vector(31 downto 0)) return std_logic_vector is
+    variable c : std_logic_vector(7 downto 0) := x"00";
+    variable nw : std_logic_vector(31 downto 0);
+    function isnan(v : std_logic_vector(31 downto 0)) return boolean is
+    begin
+      return v(30 downto 23) = x"FF" and v(22 downto 0) /= Z23V;
+    end function;
+  begin
+    if isnan(x) or isnan(y) or isnan(z) or isnan(w) then
+      return x"80";
+    end if;
+    nw := (not w(31)) & w(30 downto 0);
+    if flt_lt(x, nw) then c(0) := '1'; end if;
+    if flt_lt(w, x) then c(1) := '1'; end if;
+    if flt_lt(y, nw) then c(2) := '1'; end if;
+    if flt_lt(w, y) then c(3) := '1'; end if;
+    if flt_lt(z, x"00000000") then c(4) := '1'; end if;
+    if flt_lt(w, z) then c(5) := '1'; end if;
+    if not flt_lt(x"00000000", w) then c(6) := '1'; end if;
+    return c;
+  end function;
+
   signal last_rd, last_wr : std_logic := '0';
   signal last_addr        : unsigned(11 downto 0) := (others => '0');
   signal rd_new, wr_new   : std_logic;
@@ -476,13 +522,14 @@ architecture rtl of mcp is
   -- the stores and copies into the result buffer, two clocks from issue
   -- to their data (the converter's result, or the vertex array's word)
   type sd_t is record
-    valid, copy, hi : std_logic;
+    valid, copy, hi, isimm : std_logic;              -- (data: the converter's, a copy's, or imm)
+    imm : std_logic_vector(7 downto 0);
     entry : unsigned(9 downto 0);
     boff : unsigned(4 downto 0);
     width : natural range 1 to 4;
   end record;
-  constant SD_NONE : sd_t := (valid => '0', copy => '0', hi => '0', entry => (others => '0'),
-                              boff => (others => '0'), width => 1);
+  constant SD_NONE : sd_t := (valid => '0', copy => '0', hi => '0', isimm => '0', imm => (others => '0'),
+                              entry => (others => '0'), boff => (others => '0'), width => 1);
   signal sd_a, sd_b : sd_t := SD_NONE;
   -- the loads into T, two clocks from issue to the vertex array's word
   type vd_t is record
@@ -599,6 +646,9 @@ begin
     variable fa_i, fb_i, fc_i : natural range 0 to 15;
     variable ra, rb, rc, rtb, rtc, rma : std_logic_vector(31 downto 0);
     variable wv : std_logic_vector(31 downto 0);
+    variable skipn : natural range 0 to 15;
+    variable cc : std_logic_vector(7 downto 0);
+    variable target : unsigned(9 downto 0);
 
     function bit_of(i : integer) return std_logic_vector is
       variable v : std_logic_vector(15 downto 0) := (others => '0');
@@ -709,8 +759,9 @@ begin
       if cm.form = "00" then
         if cm.op = C_SETCTRL then
           mctrl_x <= cm.regs(1 downto 0);
-        elsif cm.op = C_SETFLAGS then                    -- after every flag still to come
-          if pv /= x"0000" or pcd = '1' or pmt = '1' then
+        elsif cm.op = C_SETFLAGS then                    -- after every flag still to come (the
+          if pv /= x"0000" or pcd = '1' or pmt = '1'     --  converter's too: stores mark nothing)
+             or sd_a.valid = '1' or sd_b.valid = '1' then
             stall := true;
           else
             flv := std_logic_vector(cm.regs(4 downto 0));
@@ -743,6 +794,22 @@ begin
           vinidx <= vinidx + vf_size(vfmt);
         elsif cm.op = C_VEND then                        -- the next entry
           vtxidx <= vtxidx + 1;
+        elsif cm.op = C_VCLIP then                       -- Vs's clip codes, from the settled registers
+          if (pendf and vmask(s)) /= x"0000" or (pv and vmask(s)) /= x"0000" or pcd = '1' then
+            stall := true;
+          else
+            cc := clip_codes(f(4 * (s mod 4)), f(4 * (s mod 4) + 1), f(4 * (s mod 4) + 2),
+                             f(4 * (s mod 4) + 3));
+            mcv := cc;
+            sd_a.valid <= '1';
+            sd_a.copy <= '0';
+            sd_a.hi <= '0';
+            sd_a.isimm <= '1';
+            sd_a.imm <= cc;
+            sd_a.entry <= vtxidx;
+            sd_a.boff <= to_unsigned(30, 5);
+            sd_a.width <= 1;
+          end if;
         elsif cm.op = C_VPASS then                       -- the attribute words, a sequence of copies
           if vfmt(4 downto 3) /= "00" then
             seq_active <= '1';
@@ -805,6 +872,15 @@ begin
               seq_issued <= '0';
               upc <= ustart(W_MMUL);
               seq_op <= W_MMUL;
+            end if;
+          when W_PSKIP =>                                -- in a program: skip t on MCOND and (d << 4 | s)
+            if in_prog then
+              if pcd = '1' then
+                stall := true;
+              elsif (unsigned(mcv) and cm.regs) /= 0 then
+                rv := X_SKIP;
+                skipn := t;
+              end if;
             end if;
           when W_VIN =>                                  -- Vd = a vertex field: a sequence of loads
             if t > 2 or (t = 1 and vfmt(1) = '0') or (t = 2 and vfmt(2) = '0') then
@@ -1068,7 +1144,9 @@ begin
       -- a store or copy into the result buffer (its data now: the
       -- converter's result, or the vertex array's word)
       if sd_b.valid = '1' then
-        if sd_b.copy = '1' then
+        if sd_b.isimm = '1' then
+          wv := x"000000" & sd_b.imm;
+        elsif sd_b.copy = '1' then
           wv := va_rd(3) & va_rd(2) & va_rd(1) & va_rd(0);
         else
           wv := cv_r;
@@ -1254,6 +1332,15 @@ begin
                 prog <= '0'; mperr <= "100"; aborted <= '1'; mpcnt <= cnt(15 downto 0);
               elsif res = X_EXIT then
                 prog <= '0'; mpcnt <= cnt(15 downto 0);
+              elsif res = X_SKIP then                      -- a jump over skipn commands
+                target := ('0' & pc) + 1 + skipn;
+                if target > 511 then                       -- past the last entry
+                  prog <= '0'; mperr <= "001"; aborted <= '1'; mpcnt <= cnt(15 downto 0);
+                else
+                  pc <= target(8 downto 0);
+                  fp <= target(8 downto 0);
+                  refill <= '1';
+                end if;
               elsif res = X_END then
                 cnt := ppass + 1;
                 if cnt = ptotal then

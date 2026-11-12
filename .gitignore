@@ -167,3 +167,9 @@ src/mcp/demo/mandel/out/
 
 # M65-MCP command timings (src/mcp/demo/vtime/vtime.py)
 src/mcp/demo/vtime/out/
+
+# M65-MCP geometry demo (src/mcp/demo/geo/geo.py)
+src/mcp/demo/geo/out/
+
+# Python bytecode
+__pycache__/

@@ -262,6 +262,21 @@ static int exec_vin(mcp_state *s, int d, int t)
 /* ---- commands ---- */
 
 enum { X_OK, X_EXIT, X_END, X_BAD };      /* exec_cmd: go on, PEXIT taken, PEND, a bad command */
+#define X_SKIP 16                         /* (+ n: PSKIP taken, n commands skipped) */
+
+uint8_t mcp_clip_codes(const uint32_t v[4])
+{
+    for (int k = 0; k < 4; k++)
+        if (is_nan(v[k])) return 0x80;
+    float32_t x = F(v[0]), y = F(v[1]), z = F(v[2]), w = F(v[3]), nw = F(v[3] ^ 0x80000000u), zero = F(0);
+    uint_fast8_t keep = softfloat_exceptionFlags;
+    uint8_t c = (uint8_t)((f32_lt_quiet(x, nw) ? 0x01 : 0) | (f32_lt_quiet(w, x) ? 0x02 : 0)
+                        | (f32_lt_quiet(y, nw) ? 0x04 : 0) | (f32_lt_quiet(w, y) ? 0x08 : 0)
+                        | (f32_lt_quiet(z, zero) ? 0x10 : 0) | (f32_lt_quiet(w, z) ? 0x20 : 0)
+                        | (f32_lt_quiet(zero, w) ? 0 : 0x40));
+    softfloat_exceptionFlags = keep;
+    return c;
+}
 
 static uint32_t op2(mcp_state *s, int op, uint32_t a, uint32_t b, uint8_t *fl)
 {
@@ -398,6 +413,12 @@ static int exec_cmd(mcp_state *s, const mcp_cmd *c, int in_prog)
             s->vtxidx = (uint16_t)((s->vtxidx + 1) & 1023);
             return X_OK;
         }
+        if (s->stage >= 5 && op == MCP_VCLIP) {           /* Vs's clip codes: MCOND and the entry's byte 30 */
+            uint8_t cc = mcp_clip_codes(&s->f[4 * (src & 3)]);
+            s->mcond = cc;
+            vout_put(s, 30, cc, 1);
+            return X_OK;
+        }
         if (s->stage >= 4 && op == MCP_VPASS) {           /* the attribute words, to entry word data + k */
             int n = (s->vfmt >> 3) & 3, a = s->vinidx + mcp_vfmt_offset(s->vfmt, 3);
             for (int k = 0; k < n; k++) vout_put(s, 4 * ((c->regs + k) & 7), vin_word(s, a + 4 * k), 4);
@@ -422,6 +443,10 @@ static int exec_cmd(mcp_state *s, const mcp_cmd *c, int in_prog)
             core = mem_core[m];
             b = c->v;
         }
+    } else if (c->form == 2 && s->stage >= 5 && c->op == MCPW_PSKIP) {
+        /* in a program: skip the next t commands if MCOND and (d << 4 | s) is not 0 */
+        if (in_prog && (s->mcond & c->regs)) return X_SKIP + (int)((c->v >> 4) & 15);
+        return X_OK;
     } else if (c->form == 2) {
         r = s->stage >= 1 ? exec_wide(s, c->op, c->regs, (int)(c->v & 0xFF)) : X_BAD;
     } else {
@@ -461,6 +486,7 @@ static void run_program(mcp_state *s, uint32_t v)
             pc = start;
             continue;
         }
+        if (r >= X_SKIP) pc += r - X_SKIP;
         pc++;
     }
     s->mpcnt = (uint16_t)done;

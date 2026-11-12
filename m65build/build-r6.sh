@@ -24,8 +24,15 @@ cd /core
 # reassembled every time (make does not see a changed flag).
 NFM=${NO_FLASHMENU:-1}
 rm -f bin/HICKUP.M65
-# Generated files first, serially: their parallel build races (megaflash).
-make DO_SMU=0 NO_FLASHMENU=$NFM preliminaries src/version.txt
+# The version files (src/version.txt and the rest) depend only on .git/HEAD,
+# which a commit on the same branch doesn't change: without this a folder
+# that builds after each commit keeps the first build's version.
+rm -f src/version.txt
+# Generated files first, serially: their parallel build races (megaflash:
+# both variants compile through megaflash.s, and they are rebuilt whenever
+# the version changes).
+make DO_SMU=0 NO_FLASHMENU=$NFM preliminaries src/version.txt \
+  src/utilities/megaflash/megaflash-attic.prg src/utilities/megaflash/megaflash-no-attic.prg
 make DO_SMU=0 NO_FLASHMENU=$NFM VIVADO=/tmp/vw/vivado_wrapper -j8 bin/mega65r6.bit
 # the first-boot instruction: $4C (jmp) = no flash menu, $2C (bit) = flash menu
 addr=$(awk '/first_boot_flag_instruction/ {print $3}' src/hyppo/HICKUP.sym | tr -d '$')

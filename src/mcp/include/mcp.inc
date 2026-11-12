@@ -114,19 +114,22 @@ MCPW_VOUTC  = $27               ; Vs as four bytes (x 2^8) into the entry at byt
 MCP_VNEXT   = $1a               ; (register forms) the next vertex
 MCP_VPASS   = $1b               ;   the vertex's attribute words into the entry from word (data)
 MCP_VEND    = $1e               ;   the entry done: VTXIDX advances
+MCP_VCLIP   = $1c               ;   Vs's clip codes into MCOND and the entry's byte 30
+MCPW_PSKIP  = $28               ; (in a program) skip t commands if MCOND and (d << 4 | s)
 MCPV_F32    = 0                 ; VOUT's formats: FP32 (4 bytes)
 MCPV_F32HI  = 1                 ;   FP32's top half
 MCPV_S12_4  = 2                 ;   s16 x 16
 MCPV_U16    = 3                 ;   u16 x 2^16 (0-1 to 0-65535)
 MCPV_S16    = 4                 ;   s16
 MCPV_S16_16 = 5                 ;   s32 x 2^16 (4 bytes)
-MCP_VINDATA = MCP + $000        ; the vertex page ($FFDF000 + offset): VINDATA, 4 addresses one port
-MCP_VINPTR  = MCP + $004        ;   2 bytes: VINDATA's address in the vertex array
-MCP_VINIDX  = MCP + $006        ;   2 bytes: the vertex VIN reads (bits 1-0 0)
-MCP_VFMT    = MCP + $008        ;   bit 0 FP32 position, 1 normal, 2 colour, 3-4 attribute words
-MCP_VPOSEXP = MCP + $009        ;   s16 positions x 2^-n
-MCP_VTXIDX  = MCP + $00c        ;   2 bytes: the entry the stores go to
-MCP_VBANK   = MCP + $00e        ;   which 2 KB of the result buffer the window shows
+MCP_VINDATA = MCP               ; the vertex page ($FFDF000 + offset): VINDATA, 4 addresses one port
+                                ; (no leading zeros above: ACME takes $004 as 16-bit)
+MCP_VINPTR  = MCP + 4           ;   2 bytes: VINDATA's address in the vertex array
+MCP_VINIDX  = MCP + 6           ;   2 bytes: the vertex VIN reads (bits 1-0 0)
+MCP_VFMT    = MCP + 8           ;   bit 0 FP32 position, 1 normal, 2 colour, 3-4 attribute words
+MCP_VPOSEXP = MCP + 9           ;   s16 positions x 2^-n
+MCP_VTXIDX  = MCP + $c          ;   2 bytes: the entry the stores go to
+MCP_VBANK   = MCP + $e          ;   which 2 KB of the result buffer the window shows
 MCP_VOUTWIN = MCP + $800        ; the window: 64 entries of 32 bytes
 
 ; FCONST numbers

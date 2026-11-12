@@ -8,8 +8,9 @@
  * matrix forms VMOVE-VNORM3, MLOAD-MMUL (half the wide forms at stage 3,
  * by every path, programs too), 4 + MCP-3 stage 1 (the default): vertex
  * uploads through VINDATA, the vertex registers, VIN, VOUT, VOUTC, VNEXT,
- * VPASS, VEND by every path, the result buffer read through its window.
- * Stage
+ * VPASS, VEND by every path, the result buffer read through its window,
+ * 5 + VCLIP and PSKIP (the default; PSKIP mostly in programs, where it
+ * acts). Stage
  * 1 adds programs: loaded through MPLOAD (now and then cut off by
  * MPLOADRST), read back through MPREAD, run by PRUN (the memory-form window
  * or the stream) with random counts and MPLIMIT values; the checkpoints read
@@ -61,7 +62,7 @@ static uint32_t pick(void)
 }
 
 static mcp_state m;
-static int stage = 4;
+static int stage = 5;
 
 /* (stage 3) a vector or matrix form */
 static int vector_op(void)
@@ -84,11 +85,11 @@ static int vertex_wide(int *regs, int *r2)
     return op;
 }
 
-/* (stage 4) a vertex register form */
+/* (stage 4) a vertex register form (stage 5: VCLIP too) */
 static int vertex_reg(void)
 {
-    static const int ops[] = {MCP_VNEXT, MCP_VPASS, MCP_VEND, MCP_VEND};
-    return ops[R(4)];
+    static const int ops[] = {MCP_VNEXT, MCP_VPASS, MCP_VEND, MCP_VEND, MCP_VCLIP, MCP_VCLIP};
+    return ops[R(stage >= 5 ? 6 : 4)];
 }
 static uint8_t mbuf[3];                     /* the memory forms' held bytes 0-2 */
 static uint8_t wbuf;                        /* the wide forms' held first byte */
@@ -135,6 +136,11 @@ static int cmd_bytes(uint8_t *b, int for_prog)
     uint32_t v = pick();
     if (for_prog && stage >= 3 && R(6) == 0) {             /* (stage 3: vectors and matrices in programs) */
         b[0] = 0x90; b[1] = (uint8_t)vector_op(); b[2] = (uint8_t)regs; b[3] = (uint8_t)(R(16) << 4);
+        return 4;
+    }
+    if (stage >= 5 && R(for_prog ? 8 : 30) == 0) {         /* (stage 5: PSKIP; in a program it acts) */
+        b[0] = 0x90; b[1] = MCPW_PSKIP; b[2] = (uint8_t)(R(3) ? 1u << R(8) : (uint32_t)regs);
+        b[3] = (uint8_t)(R(16) << 4);
         return 4;
     }
     if (stage >= 4 && R(6) == 0) {                         /* (stage 4: the vertex path, by every path) */
@@ -188,7 +194,7 @@ static void checkpoint(void)
     Rd(0x100, mcp_status(&m));
     Rd(0x103, 0);
     Rd(0x101, 0x4D);
-    Rd(0x102, stage >= 4 ? 0x03 : stage >= 1 ? 0x02 : 0x01);
+    Rd(0x102, stage >= 4 ? 0x03 : stage >= 1 ? 0x02 : 0x01);   /* (stage 5: MVER still $03) */
     if (stage >= 1) {
         Rd(0x10C, m.mpptr & 255);
         Rd(0x10D, m.mpptr >> 8);

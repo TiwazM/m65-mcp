@@ -14,9 +14,10 @@
 --   the short unit: moves, compares, min and max, sign changes, classes and
 --     constants, its result in the clock of start.
 --   the iterative unit: divide, reverse divide, reciprocal and square root
---     (a result bit a clock), rounding to an integer, conversions to and
---     from integers. One operation at a time (it_busy): divide and square
---     root 33 clocks, the rest 7.
+--     (two result bits a clock since MCP-3: the restoring steps, two to a
+--     clock), rounding to an integer, conversions to and from integers. One
+--     operation at a time (it_busy): divide and square root 20 clocks, the
+--     rest 7.
 --   the converter (MCP-3): b x 2^k rounded to a saturated 8, 16 or 32-bit
 --     integer, or b's bits as they are, for VOUT and VOUTC (MCP3.md). An
 --     operation a clock, its result in the clock after start.
@@ -740,6 +741,9 @@ begin
     variable rem2 : unsigned(28 downto 0);
     variable u : signed(11 downto 0);
     variable mm : unsigned(1 downto 0);
+    variable qv : unsigned(25 downto 0);
+    variable rv : unsigned(28 downto 0);
+    variable ov : unsigned(51 downto 0);
   begin
     if rising_edge(clock) then
       o_done <= '0';
@@ -865,41 +869,55 @@ begin
               st <= S_ILD;
           end case;
 
-        when S_DIV =>                           -- a quotient bit a clock
+        when S_DIV =>                           -- two quotient bits a clock (26 in 13)
           if dk = 0 then
             sig := dq & '0';
             if drem /= 0 then sig(0) := '1'; end if;
             qsig <= sig;
             st <= S_ROUND;
           else
-            if drem >= resize(ddiv, 29) then
-              dq <= dq(24 downto 0) & '1';
-              drem <= shift_left(drem - resize(ddiv, 29), 1);
-            else
-              dq <= dq(24 downto 0) & '0';
-              drem <= shift_left(drem, 1);
-            end if;
-            dk <= dk - 1;
+            qv := dq;
+            rv := drem;
+            for i in 1 to 2 loop
+              if rv >= resize(ddiv, 29) then
+                qv := qv(24 downto 0) & '1';
+                rv := shift_left(rv - resize(ddiv, 29), 1);
+              else
+                qv := qv(24 downto 0) & '0';
+                rv := shift_left(rv, 1);
+              end if;
+            end loop;
+            dq <= qv;
+            drem <= rv;
+            dk <= dk - 2;
           end if;
 
-        when S_SQRT =>                          -- a root bit a clock
+        when S_SQRT =>                          -- two root bits a clock
           if dk = 0 then
             sig := dq & '0';
             if drem /= 0 then sig(0) := '1'; end if;
             qsig <= sig;
             st <= S_ROUND;
           else
-            rem2 := shift_left(drem, 2) or resize(dopd(51 downto 50), 29);
-            trial := shift_left(resize(dq, 29), 2) or to_unsigned(1, 29);
-            if rem2 >= trial then
-              drem <= rem2 - trial;
-              dq <= dq(24 downto 0) & '1';
-            else
-              drem <= rem2;
-              dq <= dq(24 downto 0) & '0';
-            end if;
-            dopd <= shift_left(dopd, 2);
-            dk <= dk - 1;
+            qv := dq;
+            rv := drem;
+            ov := dopd;
+            for i in 1 to 2 loop
+              rem2 := shift_left(rv, 2) or resize(ov(51 downto 50), 29);
+              trial := shift_left(resize(qv, 29), 2) or to_unsigned(1, 29);
+              if rem2 >= trial then
+                rv := rem2 - trial;
+                qv := qv(24 downto 0) & '1';
+              else
+                rv := rem2;
+                qv := qv(24 downto 0) & '0';
+              end if;
+              ov := shift_left(ov, 2);
+            end loop;
+            dq <= qv;
+            drem <= rv;
+            dopd <= ov;
+            dk <= dk - 2;
           end if;
 
         when S_CVT =>

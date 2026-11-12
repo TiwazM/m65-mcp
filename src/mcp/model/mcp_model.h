@@ -24,7 +24,8 @@
  *   3  + vectors and matrices (all of MCP-2)
  *   4  + MCP-3 stage 1 (src/mcp/MCP3.md): the vertex array, the result buffer
  *        and their registers ($000-$0FF, the window $800-$FFF), VIN, VNEXT,
- *        VOUT, VOUTC, VPASS, VEND; MVER $03 */
+ *        VOUT, VOUTC, VPASS, VEND; MVER $03
+ *   5  + MCP-3 stage 2: VCLIP (register form $1C), PSKIP (wide form $28) */
 #ifndef MCP_MODEL_H
 #define MCP_MODEL_H
 
@@ -55,7 +56,8 @@ enum {
     MCPW_VMOVE = 0x10, MCPW_VADD, MCPW_VSUB, MCPW_VMUL, MCPW_VSCALE, MCPW_VDOT3, MCPW_VDOT4,
     MCPW_VCROSS, MCPW_VNORM3,
     MCPW_MLOAD = 0x20, MCPW_MSTORE, MCPW_MXV, MCPW_MTXV, MCPW_MMUL,
-    MCPW_VIN = 0x25, MCPW_VOUT, MCPW_VOUTC                  /* MCP-3 */
+    MCPW_VIN = 0x25, MCPW_VOUT, MCPW_VOUTC,                 /* MCP-3 */
+    MCPW_PSKIP = 0x28                                       /* (stage 2) */
 };
 
 /* VOUT's formats (MCP3.md): FP32, its top half, s16 x 16 (12.4), u16 x 2^16,
@@ -167,5 +169,8 @@ int mcp_vfmt_offset(int fmt, int field);
 /* VOUT's and VOUTC's conversion: v as format fmt (MCPV_*), rounded by rm;
  * the bits written (sign- or zero-extended to 32), flags as MFLAGS bits */
 uint32_t mcp_vout_conv(uint32_t v, int fmt, int rm, uint8_t *flags);
+/* VCLIP's codes for (x, y, z, w): bit 0 x < -w, 1 x > w, 2 y < -w, 3 y > w,
+ * 4 z < 0, 5 z > w, 6 w <= 0; a NaN anywhere: bit 7 alone */
+uint8_t mcp_clip_codes(const uint32_t v[4]);
 
 #endif

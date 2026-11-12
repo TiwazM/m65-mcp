@@ -383,6 +383,12 @@ static mcp_cmd rnd_cmd(int stage)
     memset(&c, 0, sizeof c);
     c.regs = (uint8_t)rnd32();
     int k = (int)(rnd32() % 100);
+    if (stage >= 5 && k < 12) {                                  /* (stage 5: clip codes and skips) */
+        if (k < 5) { c.form = 0; c.op = MCP_VCLIP; }
+        else { c.form = 2; c.op = MCPW_PSKIP; c.regs = (uint8_t)(1u << (rnd32() % 8) | (rnd32() % 4 ? 0 : rnd32()));
+               c.v = (rnd32() % 16) << 4; }
+        return c;
+    }
     if (k < 55) { c.form = 0; c.op = (uint8_t)safe[rnd32() % (sizeof safe / sizeof safe[0])]; }
     else if (k < 65) { c.form = 0; c.op = MCP_PEXIT; c.regs = (uint8_t)(1 << (rnd32() % 4)); }
     else if (k < 77) { c.form = 0; c.op = MCP_PEND; }
@@ -397,11 +403,15 @@ static mcp_cmd rnd_cmd(int stage)
 static int is_bad(const mcp_state *s, const mcp_cmd *c)
 {
     if (c->form == 3) return 1;
-    if (c->form == 0) return c->op >= MCP_NREGOPS2;
+    if (c->form == 0)
+        return c->op >= MCP_NREGOPS2 && !(s->stage >= 4 && (c->op == MCP_VNEXT || c->op == MCP_VPASS
+                                                             || c->op == MCP_VEND))
+               && !(s->stage >= 5 && c->op == MCP_VCLIP);
     if (c->form == 1) return (c->op & 15) >= 14;
     if (s->stage < 2) return 1;
     return !(c->op <= MCPW_FMS || (s->stage >= 3 && ((c->op >= MCPW_VMOVE && c->op <= MCPW_VNORM3)
-                                                     || (c->op >= MCPW_MLOAD && c->op <= MCPW_MMUL))));
+                                                     || (c->op >= MCPW_MLOAD && c->op <= MCPW_MMUL)))
+             || (s->stage >= 4 && c->op >= MCPW_VIN && c->op <= MCPW_VOUTC));
 }
 
 /* MCP2.md "Programs", written again from the text */
@@ -418,6 +428,8 @@ static void interpret(mcp_state *s, int start, uint32_t count)
         if (c->form == 0 && c->op == MCP_PEXIT) {
             if (s->mcond & c->regs) break;
             pc++;
+        } else if (s->stage >= 5 && c->form == 2 && c->op == MCPW_PSKIP) {
+            pc += 1 + ((s->mcond & c->regs) ? (int)((c->v >> 4) & 15) : 0);
         } else if (c->form == 0 && c->op == MCP_PEND) {
             passes++;
             if (passes >= total) break;
@@ -440,7 +452,7 @@ static void program_checks(long n)
     static mcp_state x, y;
     for (long i = 0; i < n; i++) {
         memset(&x, 0, sizeof x);
-        x.stage = 1 + (int)(rnd32() % 3);
+        x.stage = 1 + (int)(rnd32() % 5);
         mcp_reset(&x);
         for (int k = 0; k < 16; k++) x.f[k] = pick();
         x.mctrl = (uint8_t)(rnd32() % 4);
@@ -460,7 +472,7 @@ static void program_checks(long n)
         ntest++;
         if (memcmp(x.f, y.f, sizeof x.f) || memcmp(x.m, y.m, sizeof x.m) || x.mint != y.mint
             || x.mcond != y.mcond || x.mflags != y.mflags || x.mctrl != y.mctrl || x.sticky != y.sticky
-            || x.mpcnt != y.mpcnt || x.mperr != y.mperr)
+            || x.mpcnt != y.mpcnt || x.mperr != y.mperr || memcmp(x.vout, y.vout, sizeof x.vout))
             fail("program", (uint32_t)start, count, x.stage, x.mpcnt, y.mpcnt, x.mperr, y.mperr);
     }
 }
@@ -554,7 +566,7 @@ static void vertex_checks(long n)
     static uint8_t vout[32768];
     uint32_t f[16];
     memset(&x, 0, sizeof x);
-    x.stage = 4;
+    x.stage = 5;
     mcp_reset(&x);
     for (int i = 0; i < 16384; i++) x.vin[i] = (uint8_t)rnd32();
     for (int i = 0; i < 16; i++) x.f[i] = pick();
@@ -574,9 +586,16 @@ static void vertex_checks(long n)
         memcpy(vout, x.vout, sizeof vout);
         int fmt = x.vfmt, rm = (int)(rnd32() % 4), hfl = 0;
         uint16_t vinidx = x.vinidx, vtxidx = x.vtxidx;
-        uint8_t mflags0 = x.mflags, sticky0 = x.sticky;
+        uint8_t mflags0 = x.mflags, sticky0 = x.sticky, mcond = x.mcond;
         x.mctrl = (uint8_t)rm;
-        int k = (int)(rnd32() % 6), d = (int)(rnd32() % 16), sr = (int)(rnd32() % 16), t = (int)(rnd32() % 16);
+        int k = (int)(rnd32() % 7), d = (int)(rnd32() % 16), sr = (int)(rnd32() % 16), t = (int)(rnd32() % 16);
+        if (k == 6 && rnd32() % 2) {                         /* (VCLIP: values near the planes) */
+            float w = fb(pick()), c[3];
+            for (int j = 0; j < 3; j++) c[j] = rnd32() % 2 ? w * (float)((int)(rnd32() % 5) - 2) / 2.0f : fb(pick());
+            for (int j = 0; j < 3; j++) x.f[4 * (sr & 3) + j] = bf(c[j]);
+            x.f[4 * (sr & 3) + 3] = bf(w);
+            memcpy(f, x.f, sizeof f);
+        }
         int bad = 0, base = vtxidx * 32;
         if (k == 0) {                                        /* VIN Vd, t (t 0-3) */
             t &= 3;
@@ -630,14 +649,22 @@ static void vertex_checks(long n)
             for (int j = 0; j < na; j++)
                 for (int b = 0; b < 4; b++)
                     vout[base + 4 * ((w + j) & 7) + b] = x.vin[(a + 4 * j + b) & 0x3FFF];
-        } else {                                             /* VEND */
+        } else if (k == 5) {                                 /* VEND */
             mcp_exec(&x, MCP_VEND, 0, 0);
             vtxidx = (uint16_t)((vtxidx + 1) & 1023);
+        } else {                                             /* VCLIP Vs: the host's compares */
+            mcp_exec(&x, MCP_VCLIP, sr, 0);
+            const uint32_t *v = &f[4 * (sr & 3)];
+            float vx = fb(v[0]), vy = fb(v[1]), vz = fb(v[2]), vw = fb(v[3]);
+            if (isn(v[0]) || isn(v[1]) || isn(v[2]) || isn(v[3])) mcond = 0x80;
+            else mcond = (uint8_t)((vx < -vw) | (vx > vw) << 1 | (vy < -vw) << 2 | (vy > vw) << 3
+                                   | (vz < 0.0f) << 4 | (vz > vw) << 5 | !(vw > 0.0f) << 6);
+            vout[base + 30] = mcond;
         }
         ntest++;
         uint8_t wflags = (uint8_t)(mflags0 | hfl), wsticky = (uint8_t)(sticky0 | (bad ? 0x08 : 0));
         if (memcmp(f, x.f, sizeof f) || memcmp(vout, x.vout, sizeof vout) || vinidx != x.vinidx
-            || vtxidx != x.vtxidx || wflags != x.mflags || wsticky != x.sticky)
+            || vtxidx != x.vtxidx || wflags != x.mflags || wsticky != x.sticky || mcond != x.mcond)
             fail("vertex", (uint32_t)k, (uint32_t)fmt, rm, x.mflags, wflags, x.sticky, wsticky);
         x.mflags = 0;
         x.sticky = 0;

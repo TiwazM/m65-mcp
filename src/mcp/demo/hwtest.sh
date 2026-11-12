@@ -7,7 +7,9 @@
 #
 #   src/mcp/demo/hwtest.sh [bitstream] [test dir]
 #   defaults: bin/mega65r6.bit, the dir build.sh used (src/mcp/demo/out)
-#   bitstream "-": do not load one, use the core that is running.
+#   bitstream "-": do not load one, use the core that is running. It must
+#   be at BASIC's READY: mcptest and the demos (geo, vtime, mandel) end in
+#   a loop with interrupts off, so after one of them load the core again.
 #   Bitstreams from m65build (NO_FLASHMENU=1) boot straight to BASIC; with a
 #   stock flash menu, hold NO SCROLL while the core loads, release it when
 #   the slot list shows, press ESC.

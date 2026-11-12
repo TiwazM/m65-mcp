@@ -9,7 +9,7 @@
 # Writes mcpgen's script and runs tb_mcp in nvc. Work files go to $MCP_WORK
 # (default /tmp/mcp-sim). Exit status 0 = every read matched the model.
 # MCP_FASTBUS=1: every access one clock (a byte every two, the DMA's best).
-# MCP_STAGE=n: the model's stage (mcp_model.h; default 4: MCP-2 and MCP-3 stage 1, the vertex path).
+# MCP_STAGE=n: the model's stage (mcp_model.h; default 5: MCP-2 and MCP-3 stages 1-2).
 # MCP_RTL=file, MCP_FPU_RTL=file: simulate another copy of mcp.vhdl or of
 # its core mcp_fpu.vhdl (the mutants).
 # (run_fpu.sh checks the arithmetic core alone, on TestFloat's cases.)
@@ -24,7 +24,7 @@ sf=$ext/berkeley-softfloat-3
 mkdir -p $work/nvc
 cc -std=gnu99 -O2 -Wall -I$sf/source/include -I$src/mcp/model -o $work/mcpgen \
    $src/mcp/model/mcpgen.c $src/mcp/model/mcp_model.c $sf/build/$build/softfloat.a
-$work/mcpgen ${1:-1} ${2:-4000} ${MCP_STAGE:-4} > $work/script.txt
+$work/mcpgen ${1:-1} ${2:-4000} ${MCP_STAGE:-5} > $work/script.txt
 cd $work/nvc
 nvc --std=2008 -a $src/vhdl/mcp_ram.vhdl ${MCP_FPU_RTL:-$src/vhdl/mcp_fpu.vhdl} ${MCP_RTL:-$src/vhdl/mcp.vhdl} $here/tb_mcp.vhdl
 nvc --std=2008 -e tb_mcp -gSCRIPT=$work/script.txt -gFASTBUS=${MCP_FASTBUS:-0}

@@ -400,8 +400,8 @@ language's.
 Taken for now, as defaults, and open to change:
 
 - **Queue depth:** 16, with the warning at 12.
-- **Divider radix:** radix 2 (33 clocks, era-typical); radix 4 would be
-  about 17.
+- **Divider radix:** radix 2 (33 clocks, era-typical) in MCP-1 and MCP-2;
+  two steps a clock since MCP-3 stage 2 (20 clocks, the same results).
 - **The memory-form window:** 1 KB, because `STQ [zp]` ignores Z.
 - **The slot's decode:** in the iomapper; the MCP is its own entity. (It was
   split with the vertex unit until that was removed after MCP-2.)

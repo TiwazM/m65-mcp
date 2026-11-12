@@ -2,7 +2,8 @@
 
 Spec, 2026-11-12. Decisions 1-6 taken as recommended (Steve, 2026-11-12).
 Stages 0 (making room) and 1 (the plumbing) built and checked in
-simulation and on a MEGA65 R6 the same day ("Stage 0", "Stage 1" below).
+simulation and on a MEGA65 R6 the same day; stage 2 (geometry) built and
+checked in simulation ("Stage 0", "Stage 1", "Stage 2" below).
 
 MCP-3 does what m65tr3d's fixed-point vertex unit did (removed after MCP-2,
 MCP.md decision 4), on FP32:
@@ -90,7 +91,7 @@ Clipping triangles in hardware needs a primitive path (indices, new
 vertices made on the fly): a later milestone, if software shows it's
 needed.
 
-### 5. The reciprocal: a radix-4 divider
+### 5. The reciprocal: a radix-4 divider (built: two restoring steps a clock)
 
 Divide and square root at two result bits a clock: 17 clocks instead of 33,
 still correctly rounded, so no result changes. This is the "Divider radix"
@@ -169,9 +170,23 @@ program's, not the hardware's.
 | wide `$26` | VOUT | Fs into the entry at VTXIDX, at byte 2t, in format d (below) |
 | wide `$27` | VOUTC | Vs's four components as bytes (each x 2^8, rounded, clamped to 0-255) into the entry at byte 2t (t even) |
 | reg `$1B` | VPASS | the vertex's attribute words into the entry, from its word n (the data byte, 0-7; the entry's words wrap) |
-| reg `$1C` | VCLIP | (stage 2) Vs's clip codes and guard-band flag into MCOND and into the entry's flags byte |
-| reg `$1D` | PSKIP | (stage 2) in a program: if MCOND and the mask in d is not 0, skip the next s commands (0-15) |
+| reg `$1C` | VCLIP | Vs's clip codes (below) into MCOND and into the entry's byte 30 |
+| wide `$28` | PSKIP | in a program: if MCOND and (d << 4 \| s) is not 0, skip the next t commands (0-15); outside one, nothing. A skip past entry 511 aborts the program (MPERR 1) |
 | reg `$1E` | VEND | the entry done; VTXIDX advances |
+
+Register form `$1D` stays reserved: PSKIP needs a whole MCOND mask and a
+count, more than a register form's data byte holds.
+
+VCLIP's codes, for Vs = (x, y, z, w), each compare exact (+0 = -0):
+
+| Bit | |
+|---|---|
+| 0, 1 | x < -w, x > w |
+| 2, 3 | y < -w, y > w |
+| 4 | z < 0: behind the near plane |
+| 5 | z > w: beyond the far plane |
+| 6 | w <= 0: behind the eye (no meaningful projection) |
+| 7 | a NaN in x, y, z or w (then the only bit set) |
 
 VOUT's formats (d), each written little-endian:
 
@@ -191,35 +206,51 @@ flag (alone); otherwise a rounding sets the inexact flag.
 
 ### The standard program
 
-Per vertex (V0-V3 are F0-F15; the constants live in F12-F15):
+Per vertex (V0 the input, V1 clip space, F8 1/w, F9-F11 x/w, y/w, z/w,
+F12-F15 the viewport's kx, ky, cx, cy; M the matrix). The divide starts
+first, and the stores that don't need it run while it does. 1/w is computed
+for every vertex: for w = 0 that sets the divide-by-zero flag, nothing
+else. `demo/geo/geo.c` has it as bytes.
 
 ```
 VIN    V0, position        ; (x, y, z, 1)
 MXV    V1, V0              ; clip space (F4-F7)
-VCLIP  V1                  ; codes into MCOND and the entry
-PSKIP  near, 7             ; behind the near plane: no projection
 FRECIP F8, F7              ; q = 1 / w
-FMUL3  F4, F4, F8          ; x / w, y / w, z / w
-FMUL3  F5, F5, F8
-FMUL3  F6, F6, F8
-FMA    ...                 ; the viewport: cx + kx * x / w, cy - ky * y / w, depth
-VOUT   F4, s12.4, 0        ; screen x, y, depth, 1/w
-VOUT   F5, s12.4, 2
-...
-VIN    V2, colour          ; (lit: VIN V3, normal; VDOT3 with the light; FMAX 0;
-VOUTC  V2, 8               ;  an FMA with ambient and diffuse; VMUL)
+VOUT   F4, FP32, 20        ; clip-space x, y, w's top half (software clips with them)
+VOUT   F5, FP32, 24
+VOUT   F7, FP32 top, 28
+VCLIP  V1                  ; the codes: MCOND, byte 30
+VIN    V0, colour
+VOUTC  V0, 8
 VPASS  3                   ; the attributes, from word 3 (byte 12)
+PSKIP  $C0, 11             ; w <= 0 or a NaN: no projection
+FMUL3  F9, F4, F8          ; x / w, y / w, z / w
+FMUL3  F10, F5, F8
+FMUL3  F11, F6, F8
+FMOVE  F4, F14             ; cx + kx * x / w
+FMA    F4, F9, F12
+FMOVE  F5, F15             ; cy - ky * y / w
+FMS    F5, F10, F13
+VOUT   F4, 12.4, 0         ; screen x, y
+VOUT   F5, 12.4, 2
+VOUT   F11, u16, 4         ; depth
+VOUT   F8, FP32 top, 6     ; 1 / w
 VEND
 VNEXT
 PEND
 ```
 
-## Timing (estimates)
+Bytes 0-7 are not written for a vertex the program skips: software reads
+byte 30 first. Lit, the program would add VIN V2, normal; VDOT3 with the
+light (turned into object space once per object); FMAX with 0; an FMA with
+the ambient and diffuse terms; and a VMUL of the colour.
+
+## Timing
 
 | | Clocks a vertex |
 |---|---|
-| the standard program, unlit | about 70 (MXV 25, the reciprocal 17 + 5, the rest a clock or two each) |
-| lit, one directional light | about 110 |
+| the standard program (colour, attributes), measured in simulation | 75.6 (1.87 µs) |
+| the same commands in the first order (the divide waited for) | 94 |
 | the vertex unit (for comparison) | 27-30 |
 | the DMA's rate, 20-byte vertices | 40 |
 
@@ -372,6 +403,48 @@ above). MVER reads `$03`.
   MCP-2; 40.7 ms at 80 x 50), every command's clocks as on stage 0. FDIV in
   `vtime` read 31.0 clocks, as the simulation gives for stage 0 and stage
   1 alike; on stage 0's board run it read 29.7, which I can't account for.
+
+## Stage 2 (2026-11-12)
+
+Geometry: VCLIP, PSKIP, the faster divider and the standard program.
+
+- **The model** (stage 5): VCLIP and PSKIP; `mcpcheck` runs VCLIP against
+  the host's own compares (values put near the planes half the time) and
+  random programs with PSKIP, stages 1-5, against its separate
+  interpreter: 0 differences; 2 planted bugs caught.
+- **The core:** divide and square root take two of their restoring steps
+  a clock (the same steps, so the same results): the iterative unit's
+  longest operation from 32 clocks to 19, a divide 20 clocks issue to
+  result. The core bench: 26,345,680 vectors identical.
+- **The front end:** VCLIP computes the codes from the settled registers
+  (six compares and the NaN test) into MCOND and, through the store
+  pipeline, byte 30. PSKIP in a program waits for MCOND, as PEXIT does; a
+  skip is a jump forward, as PEND's.
+- **The checks:** `mcpgen` stage 5 (the default): 24 seeds at both bus
+  rates, 2,382,006 reads identical. 10 planted bugs, all caught.
+- **A bug the random scripts found:** SETFLAGS (a write to MFLAGS) waits
+  for every flag still to come, but checked only the scoreboard, and a
+  VOUT marks nothing there (its result goes to the result buffer). Seed 9
+  had a VOUT that saturates, so raises the invalid flag, and then a SETFLAGS:
+  the flag landed after it. SETFLAGS now also waits for the store pipeline.
+  This was there since stage 1.
+- **The demo** (`demo/geo`): a 512-vertex torus close enough that 71
+  vertices are behind the near plane, and 16 vertices behind the camera,
+  in 20-byte vertices (s16 positions, colour, two attribute words). One
+  PRUN of the standard program. In simulation, through the bus as
+  `geo.asm` does it: all 16,896 result bytes identical to the model's,
+  75.6 clocks a vertex.
+- **The build:** WNS +0.106 ns. The MCP is 12,740 LUTs (766 more than
+  stage 1: the core 484 more, the divider's second step a clock; the
+  front end 91, VCLIP and PSKIP), 4,342 flip-flops, 13 RAMB36; the chip
+  65.9% of its LUTs.
+- **The board:** the geo demo, all 16,896 result bytes identical to the
+  model's, 0.99 ms for the 528 vertices: 75.6 clocks (1.87 µs) a vertex,
+  as in simulation. Three stage-5 scripts (seeds 1, 2, 3), 42,863 reads
+  identical. `vtime`: FDIV 18.1 clocks (31.0 on stage 1), VNORM3 66.1
+  (92: a square root and a reciprocal), every other command as before.
+  The Mandelbrot doesn't divide: every version exact and as fast as
+  before (10.3, 11.9, 12.7 and 61.8 ms; 40.7 ms at 80 x 50).
 
 ## Open points
 
