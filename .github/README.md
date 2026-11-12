@@ -7,10 +7,10 @@ an early-1990s expansion. It has three instruction groups:
 - a scalar FPU: FP32 arithmetic, square root, conversions
 - a vector and matrix unit
 - a geometry accelerator: transformation, projection, clipping, lighting
-  (MCP-3, still to come)
+  (MCP-3: vertex programs)
 
 Ordinary MEGA65 software reaches it through memory-mapped commands at
-`$FFDF100-$FFDF7FF`. The design and its decisions are in
+`$FFDF000-$FFDFFFF`. The design and its decisions are in
 [`src/mcp/MCP.md`](../src/mcp/MCP.md).
 
 - **MCP-1** ([`src/mcp/MCP1.md`](../src/mcp/MCP1.md)), the scalar FPU: built
@@ -26,6 +26,12 @@ Ordinary MEGA65 software reaches it through memory-mapped commands at
 
   Together they take the Mandelbrot benchmark from 61.9 ms to 10.3 ms
   (40 x 25 points; 80 x 50: 243.7 ms to 40.7 ms).
+- **MCP-3** ([`src/mcp/MCP3.md`](../src/mcp/MCP3.md)), geometry: a vertex
+  array and a result buffer, conversions on the way in and out, clip
+  codes, a skip for vertices behind the camera, a faster divider. The
+  standard vertex program (in [`mcp.inc`](../src/mcp/include/mcp.inc))
+  transforms, clips, projects and lights a vertex in 90 clocks (2.2 µs;
+  73 unlit). Built and passes on the board.
 
 See [`src/mcp/README.md`](../src/mcp/README.md).
 

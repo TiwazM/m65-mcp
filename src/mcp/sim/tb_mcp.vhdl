@@ -1,6 +1,7 @@
 -- tb_mcp: src/vhdl/mcp.vhdl (with its core) against the model, through the
 -- fastio bus: plays mcpgen's script (W writes, R reads compared with the
--- model's values, I waits for the unit), then the overrun test (O): 40
+-- model's values, I waits for the unit, T reports the clock count), then
+-- the overrun test (O): 40
 -- divides back to back must fill the queue (MQLEN 16 at most), set MSTATUS
 -- bit 2, and a write to MSTATUS must clear it; and (stage 1 on) the MPABORT
 -- test (A): an endless program (FADD F0, F0; PEND; 65,536 passes, no
@@ -139,6 +140,9 @@ begin
       elsif c = 'I' then
         wait_idle;
         ni := ni + 1;
+      elsif c = 'T' then
+        -- the clock count, for timing a script's stretch (demo/geo/geo.py --sim)
+        report "T " & integer'image(now / 24690 ps);
       elsif c = 'O' then
         -- the overrun test: 40 divides at the DMA's best rate fill the queue
         fast := true;

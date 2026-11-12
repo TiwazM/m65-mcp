@@ -1,9 +1,9 @@
 # MCP-3: geometry
 
 Spec, 2026-11-12. Decisions 1-6 taken as recommended (Steve, 2026-11-12).
-Stages 0 (making room) and 1 (the plumbing) built and checked in
-simulation and on a MEGA65 R6 the same day; stage 2 (geometry) built and
-checked in simulation ("Stage 0", "Stage 1", "Stage 2" below).
+Stages 0 (making room), 1 (the plumbing), 2 (geometry) and 3 (light, a
+program: no new hardware) built and checked in simulation and on a MEGA65
+R6 the same day ("Stage 0" to "Stage 3" below).
 
 MCP-3 does what m65tr3d's fixed-point vertex unit did (removed after MCP-2,
 MCP.md decision 4), on FP32:
@@ -206,11 +206,25 @@ flag (alone); otherwise a rounding sets the inexact flag.
 
 ### The standard program
 
-Per vertex (V0 the input, V1 clip space, F8 1/w, F9-F11 x/w, y/w, z/w,
-F12-F15 the viewport's kx, ky, cx, cy; M the matrix). The divide starts
-first, and the stores that don't need it run while it does. 1/w is computed
-for every vertex: for w = 0 that sets the divide-by-zero flag, nothing
-else. `demo/geo/geo.c` has it as bytes.
+Two, shipped in `mcp.inc` as data for MPLOAD: `+mcp_stdprog` (unlit, 25
+entries) and `+mcp_stdprog_lit` (one directional light and an ambient
+term, 36 entries; the vertices need a normal). Before the PRUN: M the
+matrix (projection x view x model), F12-F15 the viewport's kx, ky, cx, cy
+(screen x = cx + kx x/w, y = cy - ky y/w), VFMT, VPOSEXP, VINIDX, VTXIDX.
+Per vertex: V0 the input, V1 clip space, F8 1/w, F9-F11 x/w, y/w, z/w.
+`demo/geo/geo.c` builds them for the model, and `geo.py` checks that
+`mcp.inc`'s bytes are the same.
+
+The order is for the issue (measured under "Timing"). Commands issue one a
+clock, in order. A sequence (VIN, MXV, VOUTC, VPASS, VDOT3) holds the issue
+until its result is in; any other command waits only for its operands,
+and an FMA-pipeline result can be used 5 clocks after its command issued.
+So the divide starts as soon as w is known and the commands that don't
+need it run while it does, and in the projection each result's consumer
+comes about five commands later. 1/w is computed for every vertex: for w
+= 0 that sets the divide-by-zero flag, nothing else.
+
+Unlit:
 
 ```
 VIN    V0, position        ; (x, y, z, 1)
@@ -228,31 +242,83 @@ FMUL3  F9, F4, F8          ; x / w, y / w, z / w
 FMUL3  F10, F5, F8
 FMUL3  F11, F6, F8
 FMOVE  F4, F14             ; cx + kx * x / w
-FMA    F4, F9, F12
 FMOVE  F5, F15             ; cy - ky * y / w
+FMA    F4, F9, F12
 FMS    F5, F10, F13
+VOUT   F8, FP32 top, 6     ; 1 / w
+VOUT   F11, u16, 4         ; depth
 VOUT   F4, 12.4, 0         ; screen x, y
 VOUT   F5, 12.4, 2
-VOUT   F11, u16, 4         ; depth
-VOUT   F8, FP32 top, 6     ; 1 / w
 VEND
 VNEXT
 PEND
 ```
 
-Bytes 0-7 are not written for a vertex the program skips: software reads
-byte 30 first. Lit, the program would add VIN V2, normal; VDOT3 with the
-light (turned into object space once per object); FMAX with 0; an FMA with
-the ambient and diffuse terms; and a VMUL of the colour.
+Lit: the colour's r, g, b times max(N . L, 0) + ka, a as it is.
+
+```
+VIN    V2, normal          ; F8-F10 = nx, ny, nz
+FMUL   F8, #lx             ; (memory forms: the light is in the program)
+FMUL   F9, #ly
+FMUL   F10, #lz
+VIN    V0, position        ; (the products land meanwhile)
+FADD3  F11, F8, F9
+FADD   F10, #ka
+MXV    V1, V0
+FADD   F11, F10            ; N . L + ka
+FRECIP F8, F7
+VOUT   F4, FP32, 20
+VOUT   F5, FP32, 24
+VOUT   F7, FP32 top, 28
+FMAX   F11, #ka            ; max(N . L + ka, ka) = max(N . L, 0) + ka
+VCLIP  V1
+VIN    V0, colour
+FMUL   F0, F11
+FMUL   F1, F11
+FMUL   F2, F11
+VPASS  3
+VOUTC  V0, 8
+PSKIP  $C0, 11             ; then as the unlit program
+...
+```
+
+- **The light** (lx, ly, lz) points from the surface toward the light, in
+  object space, already times the diffuse term: the CPU turns it once per
+  object (by the transpose of the model-view rotation) and rewrites
+  entries 1-3; ka is in entries 6 and 13 (`MCPS_LIGHT`, `MCPS_AMB1`,
+  `MCPS_AMB2` in `mcp.inc`). The constants live in the program, so the
+  light takes no register: F0-F15 hold the vertex, clip space, the
+  projection and the viewport, as unlit.
+- **The normal** is s8 x 2^-7, not normalised (127 is 0.992); a program
+  that cares adds VNORM3 (66 clocks).
+- **Not VDOT3:** its three steps depend on one another, and as a sequence
+  it holds the issue for all 18 of its clocks. The three products as
+  memory forms before the position's VIN, and the sums after it, take 5
+  issue clocks. The first lit program, with VDOT3, took 112.6 clocks a
+  vertex.
+- **Bytes 0-7** are not written for a vertex the program skips: software
+  reads byte 30 first. The colour and the clip-space values are written
+  for every vertex (clipping an edge needs both ends).
 
 ## Timing
 
+Measured in simulation (`geo.py --sim`, on the demo mesh) and on the board
+(`geo.py`, timed by CIA 2 to the microsecond): the same but for 0.1 clock.
+
 | | Clocks a vertex |
 |---|---|
-| the standard program (colour, attributes), measured in simulation | 75.6 (1.87 µs) |
-| the same commands in the first order (the divide waited for) | 94 |
+| the standard program, unlit | 72.7 (1.79 µs; on the board 72.8) |
+| the standard program, lit | 89.7 (2.21 µs; on the board 89.7) |
+| stage 2's order of the unlit program | 75.6 |
+| the lit program with VDOT3 (the first try) | 112.6 |
 | the vertex unit (for comparison) | 27-30 |
-| the DMA's rate, 20-byte vertices | 40 |
+| the DMA's rate: 20-byte vertices (unlit), 24-byte (lit) | 40, 48 |
+
+Where the lit program's 90 clocks go: 58 are its sequences (VIN three
+times, 22; MXV 26; VPASS 4; VOUTC 6), 30 its other commands, one a stall
+and one the jump back to the first entry. 15 of the sequences' clocks are
+spent waiting for their last result to land, holding the issue ("Open
+points"). The spec's estimates were 70 unlit and 110 lit.
 
 ## Verification
 
@@ -278,7 +344,8 @@ As for MCP-1 and MCP-2:
 2. **Geometry:** VCLIP, PSKIP, the radix-4 divider, the standard program,
    a demo mesh, the timings.
 3. **Light:** lighting in the standard program (no new hardware unless the
-   timings call for it).
+   timings call for it). They didn't: the lit program is 90 clocks a
+   vertex against the 110 estimated ("Stage 3").
 
 ## Stage 0 (2026-11-12)
 
@@ -446,11 +513,53 @@ Geometry: VCLIP, PSKIP, the faster divider and the standard program.
   The Mandelbrot doesn't divide: every version exact and as fast as
   before (10.3, 11.9, 12.7 and 61.8 ms; 40.7 ms at 80 x 50).
 
+## Stage 3 (2026-11-12)
+
+Light: the standard program lit, and both programs shipped in `mcp.inc`.
+No new hardware, so MVER stays `$03` and the model's stage 5.
+
+- **The programs** ("The standard program"): the lit one adds the normal's
+  VIN, its product with the light (three memory-form multiplies and two
+  adds), the intensity (max(N . L + ka, ka)) and the colour's three
+  multiplies: 11 commands. The light's constants are in the program, so
+  the registers were not tight after all (the open point a second bank
+  of constants was for).
+- **The order:** the first lit program used VDOT3 and took 112.6 clocks a
+  vertex; a trace of one pass showed the issue held by VDOT3's chain of
+  steps. Without it, 95.6; reordered so the products land while VIN
+  fetches the position and the projection's results are used five
+  commands after they start, 89.7. The same projection order takes the
+  unlit program from 75.6 to 72.7. Both are now the issue's minimum for
+  their commands but a clock or two: every other clock goes to a command
+  or a sequence ("Timing").
+- **`mcp.inc`:** `+mcp_stdprog` and `+mcp_stdprog_lit .lx, .ly, .lz, .ka`
+  (the light as FP32 bit patterns), and the entries to rewrite per object
+  (`MCPS_LIGHT`, `MCPS_AMB1`, `MCPS_AMB2`). The MCP's addresses in the
+  header now say `$FFDF000-$FFDFFFF`, MVER `$03`.
+- **The demo** (`demo/geo`): the torus with normals (24-byte vertices,
+  VFMT `$16`), one light from the upper left in front of it (272 of the
+  528 vertices face away: the ambient term alone), lit by default and
+  `--unlit` for the program without the light. `geo.asm` takes the
+  program from `mcp.inc`'s macros, and `geo.py` checks their bytes against
+  `geo.c`'s. `geo.py --sim` runs the same writes and reads in nvc and
+  times the PRUN (the bench's new `T` line reports the clock).
+- **The checks:** in simulation, both programs' 16,896 result bytes
+  identical to the model's; the model's colours identical to a host
+  computation of the same formula in double. `mcpgen` seed 3 and the
+  other demos unchanged.
+- **The board** (stage 2's bitstream: no new hardware): both programs, all
+  16,896 result bytes identical to the model's; lit 1.17 ms for the 528
+  vertices, 89.7 clocks (2.21 µs) a vertex; unlit 0.95 ms, 72.8 clocks
+  (1.80 µs). A frame at 60 Hz has room for about 7,500 lit vertices.
+
 ## Open points
 
 - **VOUT's formats:** which, exactly; the entry layout is the program's.
-- **Registers:** F0-F15 are tight for a lit program (the vertex, clip
-  space, the viewport's constants, the light). A second bank of 16
-  constants, readable as operands only, would help.
+- **Sequences hold the issue** until their last result is in: 15 of the
+  lit program's 90 clocks (VIN 2-3, MXV 6, VPASS and VOUTC 1). Letting the
+  next command issue once a sequence's last step has (the copy into Vd
+  marked in the scoreboard, as a single command's result is) would win
+  part of them back, about 10 clocks a vertex lit and unlit, for a change
+  to the scoreboard and the sequencer.
 - **Triangles in hardware:** an index stream and near clipping, after
   MCP-3 if software needs them.

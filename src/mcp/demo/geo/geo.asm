@@ -1,7 +1,7 @@
 ; geo - the M65-MCP's standard vertex program (MCP3.md) on the demo mesh
 ; geo.c prepares: the matrix and the viewport into the MCP, the vertices
-; through VINDATA, the program through MPLOAD, then one PRUN with a pass a
-; vertex, timed by CIA 2. The result buffer is then copied through the
+; through VINDATA, the program (mcp.inc's, lit or not, the light from geo.c)
+; through MPLOAD, then one PRUN with a pass a vertex, timed by CIA 2. The result buffer is then copied through the
 ; window ($FFDF800, bank by bank) to chip RAM for geo.py to compare.
 ;
 ; Assemble with ACME 0.97+ (geo.py does it), out/ holding geo.c's files:
@@ -101,9 +101,9 @@ start:
         sta data
         lda #>vertices
         sta data+1
-        lda #<(NVTX * 20)
+        lda #<(NVTX * VSIZE)
         sta v_cnt
-        lda #>(NVTX * 20)
+        lda #>(NVTX * VSIZE)
         sta v_cnt+1
         ldy #0
         ldz #0
@@ -227,5 +227,14 @@ pageloop:
 
 c_prun: !32 NVTX << 16      ; PRUN: entry 0, NVTX passes
 regs:   !binary "geo_regs.bin"
-program: !binary "geo_prog.bin"
+program:                    ; the standard program, as mcp.inc ships it
+!if LIT {
+        +mcp_stdprog_lit LX, LY, LZ, KA
+} else {
+        +mcp_stdprog
+}
+program_end:
+!if program_end - program != PROGLEN {
+        !error "mcp.inc's standard program is not geo.c's length"
+}
 vertices: !binary "geo_vtx.bin"

@@ -1,9 +1,13 @@
 """geo: the M65-MCP's standard vertex program on a MEGA65 R6 (geo.asm):
-528 vertices (a torus, and some behind the camera) transformed, clipped,
-projected and stored in the result buffer by one PRUN; every result byte
-compared with the model's (geo.c), the PRUN timed by CIA 2.
+528 vertices (a torus, and some behind the camera) transformed, lit,
+clipped, projected and stored in the result buffer by one PRUN; every
+result byte compared with the model's (geo.c), the PRUN timed by CIA 2.
 
-    python3 -I src/mcp/demo/geo/geo.py [bitstream]
+    python3 -I src/mcp/demo/geo/geo.py [bitstream] [--unlit] [--sim]
+
+--unlit: the program without the light (MCP-3 stage 2's), vertices
+without normals. --sim: no board; the same writes and reads through the
+fastio bus in nvc (src/mcp/sim/tb_mcp.vhdl), the PRUN timed in clocks.
 
 Needs src/mcp/sim/fetch.sh run once (geo.c is built on the model and
 SoftFloat). Loads the bitstream over JTAG (volatile; the flash is not
@@ -55,22 +59,100 @@ def boot(bit):
     sys.exit("no MCP after three loads")
 
 
-def build():
+def build(unlit):
     os.makedirs(OUT, exist_ok=True)
     model = os.path.join(SRC, "mcp", "model")
     run("cc", "-std=gnu99", "-O2", "-I", os.path.join(SF, "source", "include"), "-I", model,
         "-o", os.path.join(OUT, "geo"), os.path.join(HERE, "geo.c"), os.path.join(model, "mcp_model.c"),
         os.path.join(SF, "build", SFBUILD, "softfloat.a"), "-lm")
-    print(run(os.path.join(OUT, "geo"), OUT).strip())
+    print(run(os.path.join(OUT, "geo"), *(["--unlit"] if unlit else []), OUT).strip())
     run("acme", "-f", "cbm", "-I", os.path.join(SRC, "mcp", "include"), "-I", OUT,
         "-o", os.path.join(OUT, "geo.prg"), os.path.join(HERE, "geo.asm"))
+    # mcp.inc's standard program, byte for byte the one geo.c gave the model
+    # (the simulation loads geo.c's; geo.prg carries mcp.inc's)
+    t = os.path.join(OUT, "stdprog.asm")
+    open(t, "w").write('!source "mcp.inc"\n!source "geo.inc"\n* = 0\n'
+                       '!if LIT {\n+mcp_stdprog_lit LX, LY, LZ, KA\n} else {\n+mcp_stdprog\n}\n')
+    run("acme", "-f", "plain", "-I", os.path.join(SRC, "mcp", "include"), "-I", OUT,
+        "-o", os.path.join(OUT, "stdprog.bin"), t)
+    if open(os.path.join(OUT, "stdprog.bin"), "rb").read() != open(os.path.join(OUT, "geo_prog.bin"), "rb").read():
+        sys.exit("mcp.inc's standard program differs from geo.c's")
+
+
+def simulate(exp):
+    """geo.asm's writes and the window's reads as a tb_mcp script, in nvc:
+    every read compared with the model's, the PRUN timed"""
+    rd = lambda n: open(os.path.join(OUT, n), "rb").read()
+    regs, vtx, prog = rd("geo_regs.bin"), rd("geo_vtx.bin"), rd("geo_prog.bin")
+    inc = dict(l.split(" = ") for l in open(os.path.join(OUT, "geo.inc")).read().split("\n") if l)
+    nvtx, vfmt, pexp = int(inc["NVTX"]), int(inc["VFMT"].strip("$"), 16), int(inc["VPOSEXP"])
+    lines = []
+    w = lambda a, v: lines.append(f"W {a:03X} {v & 255:02X}")
+    w(0x107, 0)                                       # MRESET
+    for x in range(64):                               # F0-F15 (FMOVE memory forms), MLOAD
+        w(0x400 + x, regs[x])
+    w(0x200 + 2 * 0x20, 0)
+    w(0x201 + 2 * 0x20, 0)
+    for x in range(16):                               # F12-F15
+        w(0x430 + x, regs[64 + x])
+    lines.append("I")
+    w(0x004, 0)                                       # VINPTR, VINDATA
+    w(0x005, 0)
+    for v in vtx:
+        w(0x000, v)
+    w(0x12C, 0)                                       # MPLOADRST, MPPTR, MPLOAD
+    w(0x10C, 0)
+    w(0x10D, 0)
+    for v in prog:
+        w(0x128, v)
+    for a, v in ((0x008, vfmt), (0x009, pexp), (0x006, 0), (0x007, 0), (0x00C, 0), (0x00D, 0)):
+        w(a, v)
+    lines.append("I")
+    for k in range(4):                                # PRUN 0, nvtx passes (the fourth byte issues)
+        w(0x780 + k, (nvtx << 16) >> (8 * k))
+    lines += ["T", "I", "T"]
+    lines += [f"R 10E {nvtx & 255:02X}", f"R 10F {nvtx >> 8:02X}", "R 110 00"]
+    for i, v in enumerate(exp):
+        if i % 2048 == 0:
+            w(0x00E, i // 2048)                       # VBANK
+        lines.append(f"R {0x800 + i % 2048:03X} {v:02X}")
+    sim = os.path.join(OUT, "sim")
+    os.makedirs(sim, exist_ok=True)
+    script = os.path.join(sim, "script.txt")
+    open(script, "w").write("\n".join(lines) + "\n")
+    vhdl, tb = os.path.join(SRC, "vhdl"), os.path.join(SRC, "mcp", "sim", "tb_mcp.vhdl")
+    nvc = lambda *a: subprocess.run(["nvc", "--std=2008", *a], cwd=sim, capture_output=True, text=True)
+    for step in (("-a", os.path.join(vhdl, "mcp_ram.vhdl"), os.path.join(vhdl, "mcp_fpu.vhdl"),
+                  os.path.join(vhdl, "mcp.vhdl"), tb),
+                 ("-e", "tb_mcp", f"-gSCRIPT={script}", "-gFASTBUS=1")):
+        r = nvc(*step)
+        if r.returncode:
+            sys.exit(r.stdout + r.stderr)
+    r = nvc("-r", "tb_mcp", "--exit-severity=failure", "--ieee-warnings=off")
+    out = r.stdout + r.stderr
+    t = [int(l.split("T ")[-1]) for l in out.splitlines() if "Note" in l and ": T " in l]
+    for l in out.splitlines():
+        if "Error" in l or "PASS" in l or "FAIL" in l:
+            print(l.split(": ", 1)[-1])
+    if r.returncode or len(t) != 2 or "PASS" not in out:
+        sys.exit("FAIL: the simulation")
+    clocks = t[1] - t[0]
+    print(f"PRUN to idle: {clocks} clocks, {clocks / nvtx:.1f} a vertex ({clocks / nvtx / CLOCK * 1e6:.2f} µs; "
+          "the idle poll adds a few clocks once)")
 
 
 def main():
-    bit = sys.argv[1] if len(sys.argv) > 1 else os.path.join(ROOT, "bin", "mega65r6.bit")
-    build()
+    args = [a for a in sys.argv[1:] if not a.startswith("--")]
+    opts = [a for a in sys.argv[1:] if a.startswith("--")]
+    if set(opts) - {"--unlit", "--sim"}:
+        sys.exit(__doc__)
+    bit = args[0] if args else os.path.join(ROOT, "bin", "mega65r6.bit")
+    build("--unlit" in opts)
     exp = open(os.path.join(OUT, "geo_exp.bin"), "rb").read()
     nvtx = len(exp) // 32
+    if "--sim" in opts:
+        simulate(exp)
+        return
     boot(bit)
     ntsc = peek("ffd306f") & 0x80
     hz = 27e6 * 65 / 1716 if ntsc else 27e6 * 63 / 1728

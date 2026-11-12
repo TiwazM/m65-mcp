@@ -1,8 +1,9 @@
-; mcp.inc - the M65-MCP for ACME 0.97, !cpu m65: MCP-1 (the scalar FPU) and
-; MCP-2's programs. Addresses, opcodes and a few macros; the programming
-; model is src/mcp/MCP1.md and MCP2.md.
+; mcp.inc - the M65-MCP for ACME 0.97, !cpu m65: MCP-1 (the scalar FPU),
+; MCP-2's programs and MCP-3's vertex path. Addresses, opcodes, a few macros
+; and the standard vertex programs; the programming model is
+; src/mcp/MCP1.md, MCP2.md and MCP3.md.
 ;
-; The unit is at $FFDF100-$FFDF7FF, outside the 16-bit address space: the
+; The unit is at $FFDF000-$FFDFFFF, outside the 16-bit address space: the
 ; macros reach it through 32-bit base-page pointers ([zp],Z addressing).
 ; Two 45GS02 details (MCP.md, "The 45GS02 interface"): STQ [zp] does not
 ; add Z, LDQ [zp] does - and LDQ and STQ overwrite Z.
@@ -11,7 +12,7 @@ MCP          = $0ffdf000
 MCP_CTRLPAGE = MCP + $100       ; a pointer here reaches the next ones with Z = offset
 MCP_STATUS   = $00              ; (offsets from MCP_CTRLPAGE)
 MCP_ID       = $01              ;   reads $4D
-MCP_VER      = $02              ;   reads $01
+MCP_VER      = $02              ;   reads $03 (MCP-3)
 MCP_QLEN     = $03
 MCP_CTRL     = $04              ;   bits 0-1 rounding: MCP_RN, MCP_RD, MCP_RU, MCP_RZ
 MCP_FLAGS    = $05
@@ -131,6 +132,91 @@ MCP_VPOSEXP = MCP + 9           ;   s16 positions x 2^-n
 MCP_VTXIDX  = MCP + $c          ;   2 bytes: the entry the stores go to
 MCP_VBANK   = MCP + $e          ;   which 2 KB of the result buffer the window shows
 MCP_VOUTWIN = MCP + $800        ; the window: 64 entries of 32 bytes
+
+; The standard vertex programs (MCP3.md, "The standard program"), as data
+; for MPLOAD: set MPPTR to the first entry, write the bytes to MCP_MPLOAD,
+; then PRUN first entry, the number of vertices. Before the PRUN: M the
+; matrix (projection x view x model), F12-F15 = kx, ky, cx, cy (screen x =
+; cx + kx * x / w, y = cy - ky * y / w), VFMT and VPOSEXP, VINIDX and
+; VTXIDX. Each vertex's entry: screen x, y (12.4), depth (u16), 1/w (FP32's
+; top half), colour, the two attribute words, clip-space x, y (FP32) and w
+; (top half), the clip codes (byte 30).
+;
+; +mcp_stdprog: unlit, 25 entries (84 bytes); VFMT without a normal.
+; +mcp_stdprog_lit .lx, .ly, .lz, .ka: one directional light and an ambient
+;   term, 36 entries (130 bytes); VFMT with a normal. .lx-.lz: the light
+;   (from the surface toward it) in object space, times the diffuse term;
+;   .ka: the ambient term; all FP32 bit patterns. Per object, rewrite them
+;   in the loaded program: MPPTR = first + MCPS_LIGHT, then $84, $80 + 16 * k
+;   and the value for k = 0-2 (FMUL F8-F10 by them); MPPTR = first +
+;   MCPS_AMB1, then $81, $a0, ka; MPPTR = first + MCPS_AMB2, then $89, $b0,
+;   ka. The colour is r, g, b times max(N . L, 0) + ka, a as it is.
+MCPS_LIGHT  = 1                 ; (entries in the lit program)
+MCPS_AMB1   = 6
+MCPS_AMB2   = 13
+
+!macro mcp_stdprog {
+        !byte $90, $25, $00, $00        ;  0 VIN    V0, position
+        !byte $90, $22, $10, $00        ;  1 MXV    V1, V0          clip space
+        !byte $13, $87                  ;  2 FRECIP F8, F7          q = 1 / w
+        !byte $90, $26, $04, $a0        ;  3 VOUT   F4, FP32, 20    clip x
+        !byte $90, $26, $05, $c0        ;  4 VOUT   F5, FP32, 24    clip y
+        !byte $90, $26, $17, $e0        ;  5 VOUT   F7, top, 28     clip w
+        !byte $1c, $01                  ;  6 VCLIP  V1              codes: MCOND, byte 30
+        !byte $90, $25, $00, $20        ;  7 VIN    V0, colour
+        !byte $90, $27, $00, $40        ;  8 VOUTC  V0, 8
+        !byte $1b, $03                  ;  9 VPASS  3               the attributes: bytes 12-19
+        +mcp_stdprog_tail               ; 10-24
+}
+
+!macro mcp_stdprog_lit .lx, .ly, .lz, .ka {
+        !byte $90, $25, $20, $10        ;  0 VIN    V2, normal
+        !byte $84, $80                  ;  1 FMUL   F8, #lx         nx * lx
+        !32 .lx
+        !byte $84, $90                  ;  2 FMUL   F9, #ly
+        !32 .ly
+        !byte $84, $a0                  ;  3 FMUL   F10, #lz
+        !32 .lz
+        !byte $90, $25, $00, $00        ;  4 VIN    V0, position
+        !byte $90, $00, $b8, $90        ;  5 FADD3  F11, F8, F9
+        !byte $81, $a0                  ;  6 FADD   F10, #ka
+        !32 .ka
+        !byte $90, $22, $10, $00        ;  7 MXV    V1, V0          clip space
+        !byte $01, $ba                  ;  8 FADD   F11, F10        N . L + ka
+        !byte $13, $87                  ;  9 FRECIP F8, F7          q = 1 / w
+        !byte $90, $26, $04, $a0        ; 10 VOUT   F4, FP32, 20    clip x
+        !byte $90, $26, $05, $c0        ; 11 VOUT   F5, FP32, 24    clip y
+        !byte $90, $26, $17, $e0        ; 12 VOUT   F7, top, 28     clip w
+        !byte $89, $b0                  ; 13 FMAX   F11, #ka        the intensity
+        !32 .ka
+        !byte $1c, $01                  ; 14 VCLIP  V1              codes: MCOND, byte 30
+        !byte $90, $25, $00, $20        ; 15 VIN    V0, colour
+        !byte $04, $0b                  ; 16 FMUL   F0, F11         r, g, b lit
+        !byte $04, $1b                  ; 17 FMUL   F1, F11
+        !byte $04, $2b                  ; 18 FMUL   F2, F11
+        !byte $1b, $03                  ; 19 VPASS  3               the attributes: bytes 12-19
+        !byte $90, $27, $00, $40        ; 20 VOUTC  V0, 8
+        +mcp_stdprog_tail               ; 21-35
+}
+
+; (both programs' last 15 entries: the projection, skipped for w <= 0 or a NaN)
+!macro mcp_stdprog_tail {
+        !byte $90, $28, $c0, $b0        ;    PSKIP  $c0, 11
+        !byte $90, $02, $94, $80        ;    FMUL3  F9, F4, F8      x / w
+        !byte $90, $02, $a5, $80        ;    FMUL3  F10, F5, F8     y / w
+        !byte $90, $02, $b6, $80        ;    FMUL3  F11, F6, F8     z / w
+        !byte $00, $4e                  ;    FMOVE  F4, F14         cx
+        !byte $00, $5f                  ;    FMOVE  F5, F15         cy
+        !byte $90, $03, $49, $c0        ;    FMA    F4, F9, F12     cx + kx * x / w
+        !byte $90, $04, $5a, $d0        ;    FMS    F5, F10, F13    cy - ky * y / w
+        !byte $90, $26, $18, $30        ;    VOUT   F8, top, 6      1 / w
+        !byte $90, $26, $3b, $20        ;    VOUT   F11, u16, 4     depth
+        !byte $90, $26, $24, $00        ;    VOUT   F4, 12.4, 0     screen x
+        !byte $90, $26, $25, $10        ;    VOUT   F5, 12.4, 2     screen y
+        !byte $1e, $00                  ;    VEND
+        !byte $1a, $00                  ;    VNEXT
+        !byte $19, $00                  ;    PEND
+}
 
 ; FCONST numbers
 MCPC_ZERO = 0
