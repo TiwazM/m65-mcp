@@ -552,6 +552,75 @@ No new hardware, so MVER stays `$03` and the model's stage 5.
   vertices, 89.7 clocks (2.21 µs) a vertex; unlit 0.95 ms, 72.8 clocks
   (1.80 µs). A frame at 60 Hz has room for about 7,500 lit vertices.
 
+## On the screen (2026-11-13)
+
+Two demos that show it (`demo/show`, `show.py`), on a 320 x 200 screen of
+256 colours (VIC-IV full-colour characters numbered by column, so a pixel's
+neighbour below is 8 bytes on and a column of pixels is one DMA fill with
+a step of 8):
+
+- **The Mandelbrot** (`mandel.asm`): 64,000 points, at most 128 iterations,
+  each a PRUN of mandel_prog's pipelined program, drawn as it comes. On
+  the board 1.78 s (2,256,009 iterations), every pixel as the host's FP32
+  computation in the same order.
+- **A turning, lit torus** (`scene.asm`, `scene.c`): 240 vertices, 480
+  triangles, flat shaded, 30 frames a second. The MCP does all of its
+  arithmetic, in two programs queued back to back each frame over one
+  array of 16-byte records (VFMT `$06`):
+  - **the vertex program**, a pass a vertex: MXV, the divide, the viewport
+    (its constants in the program) and the pixel as two s16 (VOUT)
+  - **the face program**, a pass a triangle, its record the triangle's
+    centroid C, normal N and colour: with D the view direction in object
+    space (row 3 of the matrix: MSTORE leaves it in F12-F14), whether it
+    faces the eye (N . (E - C) > 0, the eye E = -tz D), its depth bucket
+    (C . D) and its shade (N . L, the light in the program's constants,
+    turned into object space by MTXV each frame); the three go out as
+    bytes through one VOUTC
+  - **the DMA** carries the records and the programs in, the matrices into
+    F0-F15 (memory forms), clears the frame buffer while the MCP works,
+    and brings the results out in one chained list: per 2 KB of the
+    window VBANK (a byte through the DMA too), then one byte of every
+    entry there, a source step of 32, straight into the CPU's tables. It
+    fills every column of every triangle (a step of 8).
+  - **the CPU** links the visible faces into 256 depth buckets and sets up
+    the triangles' columns (the hardware divider for the slopes).
+  - **The frame** (frame 64 on the board): 19.5 ms of work. The MCP's
+    part takes 0.09 ms to issue and is done before the frame buffer's
+    clear (1.56 ms) ends; the results scattered 0.25, the faces linked
+    0.32, the triangles drawn 17.29 (about 3,400 columns: 4.5 µs each,
+    of which the DMA's fill is 0.6, and 24 µs a triangle). Shown every
+    second refresh: 29.9 frames a second (NTSC).
+  - **The MCP's share:** timed alone (a build that waits for it before
+    the clear), both programs take 1.25 ms: 720 passes, 70 clocks each on
+    average. It is 7% of the frame's work and hidden behind the clear,
+    so a faster MCP would not change this frame rate; the CPU's drawing
+    sets it. At 30 frames a second the MCP would have time for about 25
+    times this geometry.
+  - **The checks:** `scene.c` plays every frame of the turn (256) through
+    the model and draws it with `scene.asm`'s integer steps; each must
+    keep every vertex on the screen and agree with a depth buffer over
+    all triangles, computed apart from the MCP's results (at most 6% of
+    the pixels differ: the edges, another fill rule). `show.py` steps the
+    board through eight frames around the turn: every pixel of each as
+    the host's.
+  - **The first version was wrong, and its check passed.** It culled the
+    front faces and drew the back ones (the inside of the far wall: a
+    plausible torus from above, wrong edge on), and frame 0 on the board
+    was pixel for pixel the host's, which had the same mistake: the host
+    decided which winding is a front face from the triangle's own
+    winding. Now the surface's outward normal decides, and the depth
+    buffer is the check that does not share the drawing's logic. It also
+    did the culling, the sort keys and the shading on the CPU (8.3 ms),
+    copied the results out whole (0.8 ms), read them vertex by vertex
+    (1.6 ms) and took 38 ms to draw: 15.8 frames a second.
+  - **The picture:** a 40 degree lens from 4.5 units (60 degrees from 3
+    bent it), and kx for the video mode's pixels (720 x 480 or 720 x 576
+    shown 4:3 are not square), taken from `$D06F` at the start.
+- **In Xemu** (no MCP): `--xemu` builds the display alone (`TEST=1`), the
+  MCP's results computed by the host; both demos pass there pixel for
+  pixel too. The Mandelbrot's palette needed `$D030` bit 2 (colours 0-15
+  from the palette RAM, not the VIC-III's palette ROM).
+
 ## Open points
 
 - **VOUT's formats:** which, exactly; the entry layout is the program's.

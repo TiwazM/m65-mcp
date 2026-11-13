@@ -38,6 +38,7 @@ does: 73 clocks a vertex unlit, 90 lit. The MCP is now 12,740 LUTs.
 | `demo/build.sh`, `demo/hwtest.sh`, `demo/mcptest.asm` | the board test: an `mcpgen` script run on a MEGA65 |
 | `demo/geo/` | the standard vertex program on a torus, against the model, on the board or in nvc |
 | `demo/mandel/`, `demo/vtime/` | the Mandelbrot benchmark, the commands' timings |
+| `demo/show/` | on the screen: the Mandelbrot at 320 x 200 in 256 colours, and a turning lit torus at 30 frames a second (a vertex program and a face program in the MCP, DMA throughout); in Xemu, their display alone |
 
 ## Running the checks
 
@@ -66,5 +67,8 @@ python3 -I src/mcp/demo/mandel/bench.py --grid 80x50   # the same at 80 x 50 poi
 python3 -I src/mcp/demo/vtime/vtime.py    # MCP-2's commands timed: a program each, 1,000 passes
 python3 -I src/mcp/demo/geo/geo.py        # the standard vertex program, lit (--unlit: without the light)
 python3 -I src/mcp/demo/geo/geo.py --sim  # the same in nvc, no board
+python3 -I src/mcp/demo/show/show.py mandel   # the Mandelbrot on the screen, checked pixel by pixel
+python3 -I src/mcp/demo/show/show.py scene    # the turning torus: eight frames checked, then the frame rate
+python3 -I src/mcp/demo/show/show.py scene --xemu   # (no board: the display code in Xemu)
 zsh m65build/report-util.sh             # after a build: the MCP's size
 ```
