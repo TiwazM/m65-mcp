@@ -18,7 +18,9 @@ Ordinary MEGA65 software reaches it through memory-mapped commands at
   calculations, vectors, matrices, programs in the MCP's memory, what
   happens when a program does not wait, and the MCP from BASIC 65
 - without a MEGA65: Xemu with the MCP in it, the `mcp` branch of
-  [TiwazM/xemu_ai_agent](https://github.com/TiwazM/xemu_ai_agent)
+  [TiwazM/xemu_ai_agent](https://github.com/TiwazM/xemu_ai_agent), with
+  builds for Linux, Windows and macOS on its
+  [releases page](https://github.com/TiwazM/xemu_ai_agent/releases)
   ([`src/mcp/README.md`](../src/mcp/README.md), "Without a MEGA65")
 
 The design and its decisions are in [`src/mcp/MCP.md`](../src/mcp/MCP.md).

@@ -8,7 +8,9 @@ The MEGA65 Mathematics Coprocessor.
   programs in the MCP's memory, what happens when a program does not
   wait, and the MCP from BASIC 65).
 - **Without a MEGA65:** Xemu with the MCP in it, the `mcp` branch of
-  [TiwazM/xemu_ai_agent](https://github.com/TiwazM/xemu_ai_agent). The
+  [TiwazM/xemu_ai_agent](https://github.com/TiwazM/xemu_ai_agent), built
+  for Linux, Windows and macOS on its
+  [releases page](https://github.com/TiwazM/xemu_ai_agent/releases). The
   same model does the arithmetic, and the unit keeps the hardware's
   clocks: it is busy as long, reads too early get the old value, a full
   queue drops commands. Every runner below takes `--xemu`
