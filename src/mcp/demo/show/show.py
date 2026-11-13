@@ -18,8 +18,8 @@ are printed, with screenshots.
 
 On the board: the bitstream is loaded over JTAG (volatile; the flash is not
 touched). --xemu: no board; a headless Xemu with the MCP in it (../xemu.py)
-runs the same programs. Its MCP takes the hardware's clocks, its CPU and
-DMA Xemu's own cycles, so the times are near the board's, not the same.
+runs the same programs, and takes the board's time for them (in the same
+video mode: XEMU_ARGS="-videostd 1" for NTSC).
 Needs ACME, a C compiler and m65rs (MEGA65 Studio).
 """
 import os
@@ -195,7 +195,7 @@ def scene(bit, on_xemu):
     f2, t2, b = sample()
     fps = (f2 - f1) / ((t2 - t1) / hz)
     if on_xemu:
-        print("(in Xemu: the MCP's clocks are the hardware's, the CPU's and the DMA's cycles Xemu's own)")
+        print("(in Xemu, whose CPU, memory, DMA and CIA timing is measured against a MEGA65 R6: its build/tests/timing-m65)")
     print(f"turning: {f2 - f1} frames in {(t2 - t1) / hz:.2f} s, {fps:.1f} frames a second "
           f"({1000 / fps:.1f} ms a frame; {'NTSC' if ntsc else 'PAL'})")
     stamps = [cia_ticks(b[8 + 4 * k:12 + 4 * k]) for k in range(7)]

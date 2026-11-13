@@ -14,11 +14,14 @@ None open.
 
 ## Measurement
 
-- **The CIA 2 clock reads about 30 µs short now and then.** Seen on about
-  5 of 142 one-shot timings in `demo/vtime`, on different tests each run,
-  always short by the same amount; the same programs in the simulator take
-  exactly the expected clocks. Not tracked down: the MEGA65 derives the
-  CIA's "1 MHz" from the video timing, and a step once a frame would fit.
+- **The CIAs' clock loses one raster line's ticks every video frame**
+  (about 31 µs; found as "reads 30 µs short now and then" in `demo/vtime`).
+  It is the MEGA65, not the MCP: `frame_generator.vhdl` hands the clock out
+  as 63 (PAL) or 65 (NTSC) ticks for every two raster lines, and the frame
+  has an odd number of lines. Measured with Xemu's `build/tests/timing-m65`:
+  31.2 ticks a frame in PAL, 32.1 in NTSC. A timing inside one frame is
+  exact if it misses the step; one over many frames is 0.16% (PAL) or 0.19%
+  (NTSC) short. Xemu's `mcp` branch does the same.
   - `vtime.py` now times everything three times and takes the longest.
   - `mandel/bench.py`, `geo/geo.py` and `show/show.py` time once: a figure
     of theirs can be 30 µs short for each such step it spans (small against

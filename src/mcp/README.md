@@ -99,8 +99,12 @@ Without a board, in Xemu (its `mcp` branch built: `make` in its
 python3 -I src/mcp/sdk/run.py --xemu
 src/mcp/demo/hwtest.sh xemu
 python3 -I src/mcp/demo/geo/geo.py --xemu
-python3 -I src/mcp/demo/vtime/vtime.py --xemu      # (Xemu's CIA ticks once a raster line: coarse)
+python3 -I src/mcp/demo/vtime/vtime.py --xemu
 python3 -I src/mcp/demo/show/show.py mandel --xemu
 python3 -I src/mcp/demo/show/show.py scene --xemu
 python3 -I src/mcp/demo/xemu.py start              # one Xemu kept for a row of runs (stop: the same with stop)
 ```
+
+Xemu starts in PAL; `XEMU_ARGS="-videostd 1"` before a command makes it
+NTSC (the torus demo's picture, and so its time, depends on the mode: in
+NTSC it takes 19.51 ms a frame there and 19.5 on the board).

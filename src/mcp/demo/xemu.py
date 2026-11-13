@@ -8,7 +8,8 @@ The Xemu is the mcp branch of TiwazM/xemu_ai_agent (Xemu's MEGA65 with the
 MCP at $FFDF000, and the UART monitor commands m65rs uses), built with
 make in its targets/mega65: $XEMU, or ~/Documents/GitHub/xemu-mcp's. It
 runs without a window, its UART monitor on a socket m65rs connects to
-(m65rs -l).
+(m65rs -l). $XEMU_ARGS: more options for it, "-videostd 1" for NTSC (it
+starts in PAL).
 
 As a module (the runners): start() makes sure one runs, resets it to
 BASIC's READY, puts the MCP back as a core just loaded has it (the
@@ -54,7 +55,7 @@ def start(need_mcp=True, log=None):
             sys.exit(f"no Xemu at {XEMU}: build the mcp branch (make in targets/mega65) or set XEMU")
         if os.path.exists(SOCK):
             os.remove(SOCK)
-        p = subprocess.Popen([XEMU, "-headless", "-besure", "-fastboot", "-uartmon", SOCK],
+        p = subprocess.Popen([XEMU, "-headless", "-besure", "-fastboot", "-uartmon", SOCK, *os.environ.get("XEMU_ARGS", "").split()],
                              cwd="/tmp", stdout=open(log or "/tmp/m65mcp-xemu.log", "w"),
                              stderr=subprocess.STDOUT, start_new_session=True)
         open(PIDFILE, "w").write(str(p.pid))
