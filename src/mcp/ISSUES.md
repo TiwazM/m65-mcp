@@ -16,12 +16,23 @@ None open.
 
 - **The CIAs' clock loses one raster line's ticks every video frame**
   (about 31 µs; found as "reads 30 µs short now and then" in `demo/vtime`).
-  It is the MEGA65, not the MCP: `frame_generator.vhdl` hands the clock out
-  as 63 (PAL) or 65 (NTSC) ticks for every two raster lines, and the frame
-  has an odd number of lines. Measured with Xemu's `build/tests/timing-m65`:
-  31.2 ticks a frame in PAL, 32.1 in NTSC. A timing inside one frame is
-  exact if it misses the step; one over many frames is 0.16% (PAL) or 0.19%
-  (NTSC) short. Xemu's `mcp` branch does the same.
+  It is the MEGA65, not the MCP, and upstream's own code:
+  `frame_generator.vhdl` hands the 1 MHz clock out as a budget of 63 (PAL)
+  or 65 (NTSC) ticks for every two raster lines, filled up again only if
+  it is used up when a line reaches a certain point, and sets the ticks'
+  accumulator to 0 at the start of every frame; the budget running then
+  finishes a few clocks late, is not filled, and the clock stands still for
+  a line. Measured with Xemu's `build/tests/timing-m65`: 31.2 ticks a frame
+  in PAL, 32.1 in NTSC; the machine's own count (`$D7F2` in C64 mode) reads
+  19,624 or 19,625 a frame in PAL where a C64 has 19,656, and 17,062 or
+  17,063 in NTSC where it has 17,095. A timing inside one frame is exact
+  if it misses the step; one over many frames is 0.16% (PAL) or 0.19%
+  (NTSC) short. The same clock paces the CPU in C64 mode. It is the PAL
+  figure of upstream's issue 816 (open): 0.982721 MHz there, 0.98281 here.
+  That issue's NTSC half (63 ticks a raster instead of 65) was fixed in
+  November 2025 (c26aec0c0), which this core has and release 0.97 has not.
+  The cause above is not in that issue yet, and no fix is tried. Xemu's
+  `mcp` branch does the same as this core.
   - `vtime.py` now times everything three times and takes the longest.
   - `mandel/bench.py`, `geo/geo.py` and `show/show.py` time once: a figure
     of theirs can be 30 µs short for each such step it spans (small against
