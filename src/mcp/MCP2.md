@@ -1,5 +1,10 @@
 # MCP-2: programs, vectors and matrices
 
+> **This is the record of how MCP-2 was specified and built, kept as
+> written.** MCP-3 changed details (MVER, timings, the address range). For
+> the unit as it is now (registers, commands, memory layout, timing), read
+> [`REFERENCE.md`](REFERENCE.md).
+
 Spec, 2026-11-12. All of it built and checked in simulation and on a
 MEGA65 R6 the same day, in four stages: 1 (programs), 2 (the FMA unit and
 the wide forms), 3a (the pipeline and the scoreboard) and 3b (vectors and

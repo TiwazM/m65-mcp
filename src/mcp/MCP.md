@@ -1,5 +1,9 @@
 # M65-MCP: the MEGA65 Mathematics Coprocessor
 
+> **This is the design as it was decided, kept as written.** The unit has
+> since been built through MCP-3. For what it is now (registers, commands,
+> memory layout, timing), read [`REFERENCE.md`](REFERENCE.md).
+
 Design, 2026-11-12. Decisions 1-4 taken (Steve, 2026-11-12; decision 4
 changed the same day). MCP-1 ([`MCP1.md`](MCP1.md)) and MCP-2
 ([`MCP2.md`](MCP2.md)) are built, and checked in simulation and on a

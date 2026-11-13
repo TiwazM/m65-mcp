@@ -1,5 +1,10 @@
 # MCP-1: the scalar FPU
 
+> **This is the record of how MCP-1 was specified and built, kept as
+> written.** Later stages changed details (MVER, the divider's timing, the
+> address range). For the unit as it is now (registers, commands, memory
+> layout, timing), read [`REFERENCE.md`](REFERENCE.md).
+
 Spec, 2026-11-12. Built the same day (`src/vhdl/mcp.vhdl`,
 `src/vhdl/mcp_fpu.vhdl`), checked in simulation and on a MEGA65 R6
 ("Verification" below). The design and the decisions behind it are in

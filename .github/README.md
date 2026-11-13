@@ -10,8 +10,18 @@ an early-1990s expansion. It has three instruction groups:
   (MCP-3: vertex programs)
 
 Ordinary MEGA65 software reaches it through memory-mapped commands at
-`$FFDF000-$FFDFFFF`. The design and its decisions are in
-[`src/mcp/MCP.md`](../src/mcp/MCP.md).
+`$FFDF000-$FFDFFFF`:
+
+- [`src/mcp/REFERENCE.md`](../src/mcp/REFERENCE.md), the hardware
+  reference: registers, commands, memory layout and timing
+- [`src/mcp/sdk/`](../src/mcp/sdk/), SDK examples to LOAD and RUN: scalar
+  calculations, vectors, matrices, programs in the MCP's memory, what
+  happens when a program does not wait, and the MCP from BASIC 65
+- without a MEGA65: Xemu with the MCP in it, the `mcp` branch of
+  [TiwazM/xemu_ai_agent](https://github.com/TiwazM/xemu_ai_agent)
+  ([`src/mcp/README.md`](../src/mcp/README.md), "Without a MEGA65")
+
+The design and its decisions are in [`src/mcp/MCP.md`](../src/mcp/MCP.md).
 
 - **MCP-1** ([`src/mcp/MCP1.md`](../src/mcp/MCP1.md)), the scalar FPU: built
   and checked in simulation against Berkeley SoftFloat and TestFloat (about

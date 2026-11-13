@@ -1,0 +1,9 @@
+M65-MCP SDK: SCALAR
+SQRT(2)            = 1.414214
+AREA, RADIUS 2.5   = 19.634954
+HYPOT(3, 4)        = 5.000000
+98.6 F IN CELSIUS  = 37.000000
+1 / 3              = 0.333333
+INT(1000 SQRT(2))  = 1414
+SQRT(2) < AREA     : YES
+MFLAGS             = $10

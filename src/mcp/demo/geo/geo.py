@@ -3,11 +3,13 @@
 clipped, projected and stored in the result buffer by one PRUN; every
 result byte compared with the model's (geo.c), the PRUN timed by CIA 2.
 
-    python3 -I src/mcp/demo/geo/geo.py [bitstream] [--unlit] [--sim]
+    python3 -I src/mcp/demo/geo/geo.py [bitstream] [--unlit] [--sim] [--xemu]
 
 --unlit: the program without the light (MCP-3 stage 2's), vertices
 without normals. --sim: no board; the same writes and reads through the
 fastio bus in nvc (src/mcp/sim/tb_mcp.vhdl), the PRUN timed in clocks.
+--xemu: no board; geo.prg in a headless Xemu with the MCP in it
+(../xemu.py).
 
 Needs src/mcp/sim/fetch.sh run once (geo.c is built on the model and
 SoftFloat). Loads the bitstream over JTAG (volatile; the flash is not
@@ -28,12 +30,17 @@ SF = os.path.join(SRC, "mcp", "ext", "berkeley-softfloat-3")
 SFBUILD = "Linux-ARM-VFPv2-GCC"
 
 
+link = []                                        # m65rs's connection options (Xemu: its socket)
+sys.path.insert(0, os.path.join(HERE, ".."))
+import xemu                                      # noqa: E402  (-I: the path is not searched by itself)
+
+
 def run(*args):
     return subprocess.run(list(args), check=True, capture_output=True, text=True).stdout
 
 
 def m65(*args):
-    return run(M65RS, *args)
+    return run(M65RS, *link, *args)
 
 
 def peek(addr):
@@ -144,7 +151,7 @@ def simulate(exp):
 def main():
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
     opts = [a for a in sys.argv[1:] if a.startswith("--")]
-    if set(opts) - {"--unlit", "--sim"}:
+    if set(opts) - {"--unlit", "--sim", "--xemu"}:
         sys.exit(__doc__)
     bit = args[0] if args else os.path.join(ROOT, "bin", "mega65r6.bit")
     build("--unlit" in opts)
@@ -153,19 +160,25 @@ def main():
     if "--sim" in opts:
         simulate(exp)
         return
-    boot(bit)
-    ntsc = peek("ffd306f") & 0x80
-    hz = 27e6 * 65 / 1716 if ntsc else 27e6 * 63 / 1728
-    m65("poke", "340", "00")
-    m65("prg", "-r", os.path.join(OUT, "geo.prg"))
-    t0 = time.time()
-    while peek("340") != 0xA5:
-        if time.time() - t0 > 30:
-            sys.exit("geo: no result after 30 s")
-        time.sleep(0.2)
-    stats, res = os.path.join(OUT, "stats.bin"), os.path.join(OUT, "results.bin")
-    m65("save", "340", "348", stats)
-    m65("save", "40000", f"{0x40000 + len(exp):x}", res)
+    if "--xemu" in opts:
+        link[:] = xemu.start()
+    else:
+        boot(bit)
+    try:
+        ntsc = peek("ffd306f") & 0x80
+        hz = 27e6 * 65 / 1716 if ntsc else 27e6 * 63 / 1728
+        m65("poke", "340", "00")
+        m65("prg", "-r", os.path.join(OUT, "geo.prg"))
+        t0 = time.time()
+        while peek("340") != 0xA5:
+            if time.time() - t0 > 30:
+                sys.exit("geo: no result after 30 s")
+            time.sleep(0.2)
+        stats, res = os.path.join(OUT, "stats.bin"), os.path.join(OUT, "results.bin")
+        m65("save", "340", "348", stats)
+        m65("save", "40000", f"{0x40000 + len(exp):x}", res)
+    finally:
+        xemu.stop_mine()
     st, got = open(stats, "rb").read(), open(res, "rb").read()
     ta, tb = st[1] | st[2] << 8, st[3] | st[4] << 8
     secs = ((0xFFFF - tb) * 65536 + (0xFFFF - ta)) / hz

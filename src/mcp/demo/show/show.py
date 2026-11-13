@@ -1,5 +1,4 @@
-"""show: the M65-MCP's display demos on a MEGA65 R6, or their display alone
-in Xemu (which has no MCP).
+"""show: the M65-MCP's display demos on a MEGA65 R6, or in Xemu.
 
     python3 -I src/mcp/demo/show/show.py mandel|scene [bitstream] [--xemu]
 
@@ -18,10 +17,10 @@ results; then it turns, and the frame rate and frame 64's time per step
 are printed, with screenshots.
 
 On the board: the bitstream is loaded over JTAG (volatile; the flash is not
-touched). --xemu: no board; a headless Xemu (the ai-agent build in
-~/src/xemu, or $XEMU) runs the TEST build, whose counts come from the
-host's table instead of the MCP - a check of the display code. Needs ACME,
-a C compiler and m65rs (MEGA65 Studio).
+touched). --xemu: no board; a headless Xemu with the MCP in it (../xemu.py)
+runs the same programs. Its MCP takes the hardware's clocks, its CPU and
+DMA Xemu's own cycles, so the times are near the board's, not the same.
+Needs ACME, a C compiler and m65rs (MEGA65 Studio).
 """
 import os
 import subprocess
@@ -33,10 +32,10 @@ SRC = os.path.abspath(os.path.join(HERE, "..", "..", ".."))
 ROOT = os.path.abspath(os.path.join(SRC, ".."))
 OUT = os.path.join(HERE, "out")
 M65RS = os.environ.get("M65RS", "/Applications/mega65studio/m65rs")
-XEMU = os.environ.get("XEMU", os.path.expanduser("~/src/xemu/build/bin/xmega65.native"))
-XSOCK = "/tmp/m65mcp-xemu.sock"     # (a socket's path must be short)
 CLOCK = 40.5e6
-link = []                           # m65rs's connection options
+link = []                           # m65rs's connection options (Xemu: its socket)
+sys.path.insert(0, os.path.join(HERE, ".."))
+import xemu                         # noqa: E402  (-I: the path is not searched by itself)
 
 
 def run(*args, **kw):
@@ -66,32 +65,6 @@ def boot(bit):
             return
         print("the load did not take (no MCP): loading again", flush=True)
     sys.exit("no MCP after three loads")
-
-
-def xemu():
-    """a headless Xemu with its UART monitor, started if none answers; reset
-    to BASIC"""
-    link[:] = ["-l", XSOCK]
-    try:
-        m65("info")
-    except subprocess.CalledProcessError:
-        if os.path.exists(XSOCK):
-            os.remove(XSOCK)
-        os.makedirs(OUT, exist_ok=True)
-        subprocess.Popen([XEMU, "-headless", "-besure", "-fastboot", "-uartmon", XSOCK],
-                         cwd=OUT, stdout=open(os.path.join(OUT, "xemu.log"), "w"),
-                         stderr=subprocess.STDOUT)
-        for _ in range(60):
-            time.sleep(0.5)
-            try:
-                m65("info")
-                break
-            except subprocess.CalledProcessError:
-                pass
-        else:
-            sys.exit("Xemu did not answer")
-    m65("reset")
-    time.sleep(4)
 
 
 def acme(name, *defs):
@@ -155,10 +128,9 @@ def compare_fb(addr, expected, what):
 def mandel(bit, on_xemu):
     os.makedirs(OUT, exist_ok=True)
     host("mandel")
-    acme("mandel", *(["-DTEST=1"] if on_xemu else []))
+    acme("mandel")
     if on_xemu:
-        xemu()
-        m65("load", os.path.join(OUT, "mandel_counts.bin") + "@50000")
+        link[:] = xemu.start()
     else:
         boot(bit)
     m65("poke", "340", "00")
@@ -168,8 +140,7 @@ def mandel(bit, on_xemu):
     shot = os.path.join(OUT, f"mandel_{'xemu' if on_xemu else 'board'}.png")
     m65("screenshot", "-p", shot)
     bad = compare_fb(0x40000, open(os.path.join(OUT, "mandel_fb.bin"), "rb").read(), "mandel")
-    what = "the host's counts, drawn" if on_xemu else "the MCP"
-    print(f"{what}: {secs:.2f} s for 64,000 points; screenshot {shot}")
+    print(f"the MCP{' in Xemu' if on_xemu else ''}: {secs:.2f} s for 64,000 points; screenshot {shot}")
     if bad:
         sys.exit(f"FAIL: {bad} of 64000 pixels differ from the host's")
     print("PASS: all 64000 pixels as the host computes them")
@@ -182,16 +153,12 @@ def scene(bit, on_xemu):
     os.makedirs(OUT, exist_ok=True)
     where = "xemu" if on_xemu else "board"
     if on_xemu:
-        xemu()
+        link[:] = xemu.start()
     else:
         boot(bit)
     ntsc = peek("ffd306f") & 0x80                # the frames are for the machine's video mode
     host("scene", "--ntsc" if ntsc else "--pal", *[str(n) for n in FRAMES], model=True)
-    acme("scene", *(["-DTEST=1"] if on_xemu else []))
-
-    def results(n):                              # (Xemu: the host's results stand in for the MCP's)
-        if on_xemu:
-            m65("load", os.path.join(OUT, f"scene_res{n}.bin") + "@8100000")
+    acme("scene")
 
     def check(n):
         wait_done(30)
@@ -201,14 +168,12 @@ def scene(bit, on_xemu):
             m65("screenshot", "-p", shot)
             sys.exit(f"FAIL: frame {n}, {bad} of 64000 pixels differ from the host's; screenshot {shot}")
 
-    results(0)
     m65("poke", "340", "00")
     m65("prg", "-r", os.path.join(OUT, "scene.prg"))
     check(0)                                     # (it holds after its first frame)
     shot = os.path.join(OUT, f"scene0_{where}.png")
     m65("screenshot", "-p", shot)
     for n in FRAMES[1:]:                         # then frame by frame
-        results(n)
         m65("poke", "371", f"{n:02x}")
         m65("poke", "370", "01")
         m65("poke", "340", "00")
@@ -230,7 +195,7 @@ def scene(bit, on_xemu):
     f2, t2, b = sample()
     fps = (f2 - f1) / ((t2 - t1) / hz)
     if on_xemu:
-        print("(Xemu: no MCP, the last frame's results drawn again each frame; its timing is the emulator's)")
+        print("(in Xemu: the MCP's clocks are the hardware's, the CPU's and the DMA's cycles Xemu's own)")
     print(f"turning: {f2 - f1} frames in {(t2 - t1) / hz:.2f} s, {fps:.1f} frames a second "
           f"({1000 / fps:.1f} ms a frame; {'NTSC' if ntsc else 'PAL'})")
     stamps = [cia_ticks(b[8 + 4 * k:12 + 4 * k]) for k in range(7)]
@@ -252,7 +217,10 @@ def main():
     if not args or args[0] not in ("mandel", "scene") or set(opts) - {"--xemu"}:
         sys.exit(__doc__)
     bit = args[1] if len(args) > 1 else os.path.join(ROOT, "bin", "mega65r6.bit")
-    (mandel if args[0] == "mandel" else scene)(bit, "--xemu" in opts)
+    try:
+        (mandel if args[0] == "mandel" else scene)(bit, "--xemu" in opts)
+    finally:
+        xemu.stop_mine()
 
 
 if __name__ == "__main__":

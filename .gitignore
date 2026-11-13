@@ -174,5 +174,8 @@ src/mcp/demo/geo/out/
 # M65-MCP display demos (src/mcp/demo/show/show.py)
 src/mcp/demo/show/out/
 
+# M65-MCP SDK examples (src/mcp/sdk/run.py)
+src/mcp/sdk/out/
+
 # Python bytecode
 __pycache__/

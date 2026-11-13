@@ -1,5 +1,9 @@
 # MCP-3: geometry
 
+> **This is the record of how MCP-3 was specified and built, stage by
+> stage, kept as written.** For the unit as it is now (registers, commands,
+> memory layout, timing), read [`REFERENCE.md`](REFERENCE.md).
+
 Spec, 2026-11-12. Decisions 1-6 taken as recommended (Steve, 2026-11-12).
 Stages 0 (making room), 1 (the plumbing), 2 (geometry) and 3 (light, a
 program: no new hardware) built and checked in simulation and on a MEGA65
@@ -140,7 +144,7 @@ Every field is whole 32-bit words, and every conversion exact:
 | 2 | colour | u8 r, g, b, a (4 bytes), each x 2^-8 |
 | 3-4 | attributes | 0-3 words passed to the entry unchanged (texture coordinates, or anything) |
 
-The fields come in that order; a vertex is 8 to 40 bytes.
+The fields come in that order; a vertex is 8 to 32 bytes.
 
 ### The result entry (32 bytes)
 

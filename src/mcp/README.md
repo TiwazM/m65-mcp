@@ -1,9 +1,23 @@
 # M65-MCP
 
-The MEGA65 Mathematics Coprocessor. The design is in [`MCP.md`](MCP.md).
-The programming model is in [`MCP1.md`](MCP1.md) (MCP-1, the scalar FPU)
-and [`MCP2.md`](MCP2.md) (MCP-2: programs, multiply-add, vectors and
-matrices) and [`MCP3.md`](MCP3.md) (MCP-3: geometry, vertex programs).
+The MEGA65 Mathematics Coprocessor.
+
+- **To use it:** [`REFERENCE.md`](REFERENCE.md), the hardware reference
+  (registers, commands, memory layout, timing), and [`sdk/`](sdk/), six
+  examples to LOAD and RUN (scalar calculations, vectors, matrices,
+  programs in the MCP's memory, what happens when a program does not
+  wait, and the MCP from BASIC 65).
+- **Without a MEGA65:** Xemu with the MCP in it, the `mcp` branch of
+  [TiwazM/xemu_ai_agent](https://github.com/TiwazM/xemu_ai_agent). The
+  same model does the arithmetic, and the unit keeps the hardware's
+  clocks: it is busy as long, reads too early get the old value, a full
+  queue drops commands. Every runner below takes `--xemu`
+  ([`demo/xemu.py`](demo/xemu.py)).
+- **How it came to be:** the design in [`MCP.md`](MCP.md), and each stage as
+  it was specified, built and checked in [`MCP1.md`](MCP1.md) (the scalar
+  FPU), [`MCP2.md`](MCP2.md) (programs, multiply-add, vectors and matrices)
+  and [`MCP3.md`](MCP3.md) (geometry, vertex programs).
+- **What is known to be wrong:** [`ISSUES.md`](ISSUES.md).
 
 MCP-1 is built and checked in simulation and on a MEGA65 R6 (board test:
 three random scripts, 35,625 reads, all identical to the model's). MCP-2
@@ -37,8 +51,10 @@ does: 73 clocks a vertex unlit, 90 lit. The MCP is now 12,740 LUTs.
 | `include/mcp.inc` | for ACME: addresses, opcodes, macros, the standard vertex programs |
 | `demo/build.sh`, `demo/hwtest.sh`, `demo/mcptest.asm` | the board test: an `mcpgen` script run on a MEGA65 |
 | `demo/geo/` | the standard vertex program on a torus, against the model, on the board or in nvc |
-| `demo/mandel/`, `demo/vtime/` | the Mandelbrot benchmark, the commands' timings |
-| `demo/show/` | on the screen: the Mandelbrot at 320 x 200 in 256 colours, and a turning lit torus at 30 frames a second (a vertex program and a face program in the MCP, DMA throughout); in Xemu, their display alone |
+| `sdk/` | the SDK examples, their macros and print routines, and `run.py` to check them on the board or in Xemu |
+| `demo/xemu.py` | starts and stops a headless Xemu with the MCP for the runners (`--xemu`) |
+| `demo/mandel/`, `demo/vtime/` | the Mandelbrot benchmark; every command's timing (the reference's tables) |
+| `demo/show/` | on the screen: the Mandelbrot at 320 x 200 in 256 colours, and a turning lit torus at 30 frames a second (a vertex program and a face program in the MCP, DMA throughout) |
 
 ## Running the checks
 
@@ -64,11 +80,25 @@ src/mcp/demo/build.sh                  # out/mcptest.prg, the records, the expec
 src/mcp/demo/hwtest.sh bin/mega65r6.bit
 python3 -I src/mcp/demo/mandel/bench.py   # the Mandelbrot timing: MCP-1, MCP-2, C (llvm-mos), BASIC 65
 python3 -I src/mcp/demo/mandel/bench.py --grid 80x50   # the same at 80 x 50 points
-python3 -I src/mcp/demo/vtime/vtime.py    # MCP-2's commands timed: a program each, 1,000 passes
+python3 -I src/mcp/demo/vtime/vtime.py    # every command timed: a program each, 1,000 passes
+python3 -I src/mcp/sdk/run.py             # the SDK examples, each screen against what it must print
 python3 -I src/mcp/demo/geo/geo.py        # the standard vertex program, lit (--unlit: without the light)
 python3 -I src/mcp/demo/geo/geo.py --sim  # the same in nvc, no board
 python3 -I src/mcp/demo/show/show.py mandel   # the Mandelbrot on the screen, checked pixel by pixel
 python3 -I src/mcp/demo/show/show.py scene    # the turning torus: eight frames checked, then the frame rate
-python3 -I src/mcp/demo/show/show.py scene --xemu   # (no board: the display code in Xemu)
 zsh m65build/report-util.sh             # after a build: the MCP's size
+```
+
+Without a board, in Xemu (its `mcp` branch built: `make` in its
+`targets/mega65`; `XEMU=path/to/xmega65.native` if it is not in
+`~/Documents/GitHub/xemu-mcp`):
+
+```
+python3 -I src/mcp/sdk/run.py --xemu
+src/mcp/demo/hwtest.sh xemu
+python3 -I src/mcp/demo/geo/geo.py --xemu
+python3 -I src/mcp/demo/vtime/vtime.py --xemu      # (Xemu's CIA ticks once a raster line: coarse)
+python3 -I src/mcp/demo/show/show.py mandel --xemu
+python3 -I src/mcp/demo/show/show.py scene --xemu
+python3 -I src/mcp/demo/xemu.py start              # one Xemu kept for a row of runs (stop: the same with stop)
 ```

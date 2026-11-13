@@ -41,7 +41,7 @@ enum {
     MCP_PEXIT = 0x18, MCP_PEND = 0x19,      /* MCP-2 */
     MCP_NREGOPS2,                           /* MCP-2: $1A-$7F reserved */
     MCP_VNEXT = 0x1A, MCP_VPASS = 0x1B,     /* MCP-3 */
-    MCP_VCLIP = 0x1C, MCP_PSKIP = 0x1D,     /* (MCP-3 stage 2) */
+    MCP_VCLIP = 0x1C,                       /* (MCP-3 stage 2; $1D is reserved: PSKIP is a wide form) */
     MCP_VEND = 0x1E
 };
 /* core-only operations: the memory forms FILD and FXLD */
