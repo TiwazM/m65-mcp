@@ -34,7 +34,7 @@ So MCP-2 does two things:
    IBM POWER1's design, 1990). On top of it come the vector and matrix
    operations MCP.md planned.
 
-## Decisions (Steve, 2026-11-12)
+## Decisions (Tiwaz, 2026-11-12)
 
 1. **Multiply-add is fused:** `a x b + c` rounded once (IEEE 754-2008
    fusedMultiplyAdd). It is verified by SoftFloat's `f32_mulAdd` and

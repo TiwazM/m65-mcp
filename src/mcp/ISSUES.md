@@ -51,6 +51,19 @@ None open.
 
 ## Around the project
 
+- **A core built with NO_FLASHMENU=1 reads a mounted disk image as
+  rubbish** (2026-11-14, an R6 with ROM 920413; why is not known). Built
+  so (20261114.01), a disk image mounted with the freezer lists entries
+  whose names are sixteen zero bytes (on the screen `8704 *DEL`, `0 "`,
+  `0`, `0`, over and over, then `0 BLOCKS FREE`). The same source built
+  with NO_FLASHMENU=0 (20261114.13, 20261114.14) lists a disk rightly,
+  mounted with the freezer and with `MOUNT` from BASIC (the latter read
+  over JTAG, MID `$4D`), as does upstream `development` with the same
+  720p work and no MCP. Not tried: `MOUNT` from BASIC on a NO_FLASHMENU=1
+  build. With the switch Hyppo skips megaflash on first boot, the one
+  program in a normal boot that talks to the SD and flash controller
+  before the ROM starts. **A core for a flash slot:
+  `NO_FLASHMENU=0 zsh m65build/run-build.sh`.**
 - **A JTAG load now and then does not take** and the board starts the core
   in its flash. The tools check MID and load again.
 - **`hwtest.sh -`** (no load) only works on a freshly started machine: the

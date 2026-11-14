@@ -4,7 +4,7 @@
 > since been built through MCP-3. For what it is now (registers, commands,
 > memory layout, timing), read [`REFERENCE.md`](REFERENCE.md).
 
-Design, 2026-11-12. Decisions 1-4 taken (Steve, 2026-11-12; decision 4
+Design, 2026-11-12. Decisions 1-4 taken (Tiwaz, 2026-11-12; decision 4
 changed the same day). MCP-1 ([`MCP1.md`](MCP1.md)) and MCP-2
 ([`MCP2.md`](MCP2.md)) are built, and checked in simulation and on a
 MEGA65 R6.
@@ -70,7 +70,7 @@ All of them run on one datapath:
   same datapath, and a geometry function (MCP-3) is a longer microcode
   routine.
 
-## Decisions (Steve, 2026-11-12)
+## Decisions (Tiwaz, 2026-11-12)
 
 ### 1. Precision: extended registers, rounding chosen per operation
 
@@ -134,7 +134,7 @@ design small, coherent and testable.
 The decision first taken was to keep m65tr3d's vertex unit until MCP-3
 replaced it, the two sharing the `$FFDF000` slot (the vertex unit at
 `$000-$0FF` and `$800-$FFF`, the MCP at `$100-$7FF`, CAPS bit 6 saying
-the MCP was there). After MCP-2 it went (Steve, 2026-11-12):
+the MCP was there). After MCP-2 it went (Tiwaz, 2026-11-12):
 
 - nothing in this core used it
 - it cost 3,364 LUTs, 17 DSPs and 7 RAMB36
@@ -212,7 +212,7 @@ Each milestone is built the way the renderer and the vertex unit were:
 ## Open questions
 
 - **Multiply-add, normalise and the program memory (MCP-2):** decided
-  (Steve, 2026-11-12): fused, square root then divide, one block RAM. See
+  (Tiwaz, 2026-11-12): fused, square root then divide, one block RAM. See
   [`MCP2.md`](MCP2.md).
 - **Exceptions:** an interrupt on enabled exceptions, as the 68881 could trap?
 - **SSNAIL:** Paul's LUMP coprocessor has FP32 and FP16 element operations

@@ -4,7 +4,7 @@
 > stage, kept as written.** For the unit as it is now (registers, commands,
 > memory layout, timing), read [`REFERENCE.md`](REFERENCE.md).
 
-Spec, 2026-11-12. Decisions 1-6 taken as recommended (Steve, 2026-11-12).
+Spec, 2026-11-12. Decisions 1-6 taken as recommended (Tiwaz, 2026-11-12).
 Stages 0 (making room), 1 (the plumbing), 2 (geometry) and 3 (light, a
 program: no new hardware) built and checked in simulation and on a MEGA65
 R6 the same day ("Stage 0" to "Stage 3" below).
@@ -36,7 +36,7 @@ square roots. What it lacks is the plumbing around them:
 The vertex unit took about 30 clocks a vertex, with the DMA bringing a
 vertex every 40. In software on the 45GS02 the same work is about 300 µs.
 
-## Decisions (Steve, 2026-11-12: as recommended)
+## Decisions (Tiwaz, 2026-11-12: as recommended)
 
 ### 1. Fixed-function or programmable: programmable
 
