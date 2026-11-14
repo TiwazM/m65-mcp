@@ -30,8 +30,11 @@ rm -f bin/HICKUP.M65
 rm -f src/version.txt
 # Generated files first, serially: their parallel build races (megaflash:
 # both variants compile through megaflash.s, and they are rebuilt whenever
-# the version changes).
-make DO_SMU=0 NO_FLASHMENU=$NFM preliminaries src/version.txt \
+# the version changes). The version files before the rest, in a make of
+# their own: made in the same one they come out after megaflash, which the
+# parallel make below then builds again, both variants at once.
+make DO_SMU=0 NO_FLASHMENU=$NFM src/version.txt
+make DO_SMU=0 NO_FLASHMENU=$NFM preliminaries \
   src/utilities/megaflash/megaflash-attic.prg src/utilities/megaflash/megaflash-no-attic.prg
 make DO_SMU=0 NO_FLASHMENU=$NFM VIVADO=/tmp/vw/vivado_wrapper -j8 bin/mega65r6.bit
 # the first-boot instruction: $4C (jmp) = no flash menu, $2C (bit) = flash menu
